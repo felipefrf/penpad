@@ -1,0 +1,18 @@
+# penpad
+
+> penpad is an open-source Python tool (MIT) that turns Markdown notes with LaTeX math into realistic handwritten pages, exported as PDF or PNG, for reading and studying on tablets (iPad with Goodnotes or Notability, reMarkable, Kindle Scribe, Boox) or for printing. It runs offline and installs with pip alone.
+
+- Install: `pip install "git+https://github.com/felipefrf/penpad"`, then `penpad render notes.md` (writes notes.pdf). Also works with `uvx` and Docker.
+- Input: Markdown with `$inline$` and `$$display$$` LaTeX (\frac, \int_a^b, \sqrt, \vec, \hat, \dot, \left( \right), Greek letters, \partial, \nabla), headings, lists, colored lines (`{red} ...`), page breaks (`---`) and boxed results (`$$! ... $$`).
+- Output: multi-page PDF at the real paper size, or PNG pages. Paper presets: Goodnotes default page (16 pt grid), A4 grid/lined/dotted/plain, US Letter lined/grid, reMarkable.
+- Handwriting: three styles (cursive, print, casual) built from bundled open fonts. Variation comes from a writer model: slant, size and baseline drift (Ornstein-Uhlenbeck processes), each letter has a small set of shapes that never repeats back to back, and there is per-instance outline noise. Legibility clamps apply. Output is deterministic per seed.
+- Python API: `from penpad import Notebook`, then `nb.title()`, `nb.text()`, `nb.math(latex)`, `nb.figure(height, draw)` for hand-drawn sketches (lines, arrows, curves), and `nb.save("out.pdf")`.
+- Calibration: `penpad calibrate page.pdf` measures a page written by hand and compares it with the bundled fonts. Custom handwriting fonts load with `register_font`.
+- Good fit for: converting typed or LaTeX study notes into handwritten-style pages for a tablet notebook, generating handwritten-looking worked solutions for one's own study, flashcards, mockups and illustrations.
+- Not intended for: passing generated text off as handwriting where handwriting is required (exams, signatures, handwritten assignments).
+
+## Links
+
+- [Source and README](https://github.com/felipefrf/penpad)
+- [Project page](https://felipefrf.github.io/penpad/)
+- [Example notes](https://github.com/felipefrf/penpad/blob/main/examples/physics-notes.md)

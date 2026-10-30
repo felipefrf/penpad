@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "penpad"
+dynamic = ["version"]
+description = "Turn Markdown and LaTeX notes into realistic handwritten pages (PDF/PNG) for iPad, Goodnotes, Notability, reMarkable or print. Offline, no system libraries."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "src/penpad/fonts/licenses/*"]
+requires-python = ">=3.9"
+authors = [{ name = "Felipe Ribeiro" }]
+keywords = [
+  "handwriting", "text-to-handwriting", "handwritten-notes", "handwriting-generator",
+  "goodnotes", "notability", "ipad", "remarkable", "tablet", "latex", "math", "study-notes", "pdf",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Intended Audience :: Education",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Topic :: Education",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: Text Processing :: Markup :: LaTeX",
+]
+dependencies = ["resvg-py>=0.3", "pillow>=9", "fonttools[woff]>=4.40"]
+
+[project.optional-dependencies]
+calibrate = ["pypdfium2>=4"]
+test = ["pytest>=7", "pypdfium2>=4"]
+
+[project.scripts]
+penpad = "penpad.cli:main"
+
+[project.urls]
+Homepage = "https://felipefrf.github.io/penpad/"
+Source = "https://github.com/felipefrf/penpad"
+Issues = "https://github.com/felipefrf/penpad/issues"
+
+[tool.hatch.version]
+path = "src/penpad/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/penpad"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/docs", "/.github"]
