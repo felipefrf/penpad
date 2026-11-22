@@ -7,8 +7,9 @@ and keeps its SVG drawn at the origin (baseline at y = 0).
 from __future__ import annotations
 
 import math
+import random
 
-from .hand import hand_line
+from .hand import _stable_seed, hand_line
 
 DRAWN = frozenset("→⇒∇‖∮∫≠·≈")
 ACCENTS = {"̂": "hat", "̇": "dot", "̈": "ddot", "⃗": "vec", "̄": "bar", "̃": "tilde"}
@@ -26,17 +27,94 @@ class Item:
         return [(c, '<g transform="translate(%.2f %.2f)">%s</g>' % (x, y, s)) for c, s in self.parts]
 
 
+def _ribbon_from_pts(pts, width, rng, closed=False):
+    """Sweep a sampled centerline into a tapered, variable-pressure filled SVG path."""
+    if len(pts) < 2:
+        return ""
+    half = max(0.35, width * 0.5)
+    n = len(pts)
+    phase = rng.uniform(0, 6.28)
+    top, bot = [], []
+    for i, (x, y) in enumerate(pts):
+        if i == 0:
+            dx, dy = pts[1][0] - x, pts[1][1] - y
+        elif i == n - 1:
+            dx, dy = x - pts[-2][0], y - pts[-2][1]
+        else:
+            dx, dy = pts[i + 1][0] - pts[i - 1][0], pts[i + 1][1] - pts[i - 1][1]
+        L = math.hypot(dx, dy)
+        if L < 1e-6:
+            nx, ny = 0.0, 1.0
+        else:
+            nx, ny = -dy / L, dx / L
+        t = i / max(1, n - 1)
+        taper = 1.0 if closed else (0.55 + 0.45 * math.sin(math.pi * min(1.0, max(0.0, t))) ** 0.45)
+        press = 0.85 + 0.25 * math.sin(3.4 * t + phase)
+        hw = half * taper * press
+        top.append((x + nx * hw, y + ny * hw))
+        bot.append((x - nx * hw, y - ny * hw))
+    cmds = ["M%.1f %.1f" % top[0]]
+    cmds += ["L%.1f %.1f" % p for p in top[1:]]
+    cmds += ["L%.1f %.1f" % p for p in reversed(bot)]
+    cmds.append("Z")
+    return "".join(cmds)
+
+
+def _sample_cubic(p0, p1, p2, p3, steps=8):
+    out = []
+    for k in range(steps + 1):
+        t = k / steps
+        mt = 1.0 - t
+        out.append((
+            mt**3 * p0[0] + 3 * mt**2 * t * p1[0] + 3 * mt * t**2 * p2[0] + t**3 * p3[0],
+            mt**3 * p0[1] + 3 * mt**2 * t * p1[1] + 3 * mt * t**2 * p2[1] + t**3 * p3[1],
+        ))
+    return out
+
+
+def _sample_quad(p0, p1, p2, steps=8):
+    out = []
+    for k in range(steps + 1):
+        t = k / steps
+        mt = 1.0 - t
+        out.append((
+            mt**2 * p0[0] + 2 * mt * t * p1[0] + t**2 * p2[0],
+            mt**2 * p0[1] + 2 * mt * t * p1[1] + t**2 * p2[1],
+        ))
+    return out
+
+
 def stroke(hand, pts, color, width, closed=False):
-    if closed:
-        pts = list(pts) + [pts[0]]
-    d = " ".join(hand_line(a[0], a[1], b[0], b[1], hand.rng, 0.35, 0.25) for a, b in zip(pts, pts[1:]))
-    return (color, '<path d="%s" fill="none" stroke="%s" stroke-width="%.2f" '
-                   'stroke-linecap="round" stroke-linejoin="round"/>' % (d, color, width))
+    """Variable-pressure filled hand-drawn stroke along a polyline."""
+    r = hand.rng
+    seq = list(pts) + ([pts[0]] if closed else [])
+    sampled = []
+    for idx, (a, b) in enumerate(zip(seq, seq[1:])):
+        length = math.hypot(b[0] - a[0], b[1] - a[1])
+        off = min(0.7, length / 12.0)
+        div = 0.24 + r.random() * 0.16
+        mx = 0.25 * 2.0 * (b[1] - a[1]) / 200.0
+        my = 0.25 * 2.0 * (a[0] - b[0]) / 200.0
+        p0 = (a[0] + r.uniform(-off, off), a[1] + r.uniform(-off, off))
+        c1 = (mx + a[0] + (b[0] - a[0]) * div + r.uniform(-off, off),
+              my + a[1] + (b[1] - a[1]) * div + r.uniform(-off, off))
+        c2 = (mx + a[0] + 2 * (b[0] - a[0]) * div + r.uniform(-off, off),
+              my + a[1] + 2 * (b[1] - a[1]) * div + r.uniform(-off, off))
+        p3 = (b[0] + r.uniform(-off, off), b[1] + r.uniform(-off, off))
+        seg_pts = _sample_cubic(p0, c1, c2, p3, steps=max(4, min(10, int(length / 8) + 4)))
+        sampled.extend(seg_pts if idx == 0 else seg_pts[1:])
+    d = _ribbon_from_pts(sampled, width, r, closed=closed)
+    return (color, '<path d="%s" fill="%s"/>' % (d, color))
 
 
 def curve(d, color, width):
     return (color, '<path d="%s" fill="none" stroke="%s" stroke-width="%.2f" stroke-linecap="round"/>'
             % (d, color, width))
+
+
+def _ribbon_path(pts, color, width, rng, closed=False):
+    d = _ribbon_from_pts(pts, width, rng, closed=closed)
+    return (color, '<path d="%s" fill="%s"/>' % (d, color))
 
 
 def _pen(hand, size):
@@ -54,62 +132,113 @@ class Text(Item):
 
 
 class Symbol(Item):
-    """Symbol drawn stroke by stroke (fonts rarely have a convincing one)."""
+    """Symbol drawn stroke by stroke with per-writer allographs and variable pen pressure."""
 
     def __init__(self, hand, ch, size, color):
         super().__init__()
         t, r = size, hand.rng
-        e = _pen(hand, t)
+        e = _pen(hand, t) * r.uniform(0.92, 1.12)
+        # Writer-specific allograph (3 variants per symbol) + instance jitter
+        var = r.randrange(3)
+        vr = random.Random(_stable_seed(hand.seed, "sym", ch, var))
+        slant = vr.uniform(-0.08, 0.14) + r.uniform(-0.04, 0.04)
 
-        def j(v):
-            return v + r.uniform(-0.02, 0.02) * t
+        def j(v, amp=0.025):
+            return v + r.uniform(-amp, amp) * t
 
         def P(x, y):
-            return (j(x * t), j(y * t))
+            # Apply slight writer slant around midline (-0.3 * t)
+            sx = x + slant * (-0.3 - y)
+            return (j(sx * t), j(y * t))
 
         p = self.parts
         if ch == "→":
-            p.append(stroke(hand, [P(0.12, -0.3), P(0.9, -0.3)], color, e))
-            p.append(stroke(hand, [P(0.72, -0.43), P(0.92, -0.3), P(0.72, -0.17)], color, e))
-            self.w = 1.05 * t
+            ym = vr.uniform(-0.34, -0.26)
+            bow = vr.uniform(-0.05, 0.05)
+            end_x = vr.uniform(0.84, 0.96)
+            shaft = _sample_quad(P(0.08, ym), P(0.48, ym + bow), P(end_x, ym + r.uniform(-0.03, 0.03)), steps=8)
+            p.append(_ribbon_path(shaft, color, e, r))
+            barb_len = vr.uniform(0.16, 0.25)
+            spread = vr.uniform(0.11, 0.17)
+            asym = vr.uniform(-0.03, 0.03)
+            tip = P(end_x + 0.02, ym)
+            if var == 0:
+                p.append(stroke(hand, [P(end_x - barb_len, ym - spread), tip, P(end_x - barb_len + asym, ym + spread)], color, e))
+            else:
+                # Two quick flicks for top and bottom barbs
+                p.append(_ribbon_path(_sample_quad(P(end_x - barb_len, ym - spread), P(end_x - barb_len * 0.4, ym - spread * 0.45), tip, 6), color, e * 0.95, r))
+                p.append(_ribbon_path(_sample_quad(tip, P(end_x - barb_len * 0.45, ym + spread * 0.4), P(end_x - barb_len + asym, ym + spread), 6), color, e * 0.95, r))
+            self.w = (end_x + 0.14) * t
         elif ch == "⇒":
-            p.append(stroke(hand, [P(0.12, -0.21), P(0.85, -0.21)], color, e))
-            p.append(stroke(hand, [P(0.12, -0.41), P(0.85, -0.41)], color, e))
-            p.append(stroke(hand, [P(0.7, -0.55), P(0.98, -0.31), P(0.7, -0.07)], color, e))
-            self.w = 1.12 * t
+            gap = vr.uniform(0.085, 0.115)
+            ym = vr.uniform(-0.33, -0.28)
+            end_x = vr.uniform(0.82, 0.90)
+            p.append(stroke(hand, [P(0.10, ym + gap), P(end_x, ym + gap)], color, e * 0.95))
+            p.append(stroke(hand, [P(0.10, ym - gap), P(end_x, ym - gap)], color, e * 0.95))
+            head_x = end_x + vr.uniform(0.10, 0.16)
+            sp = vr.uniform(0.21, 0.27)
+            p.append(stroke(hand, [P(end_x - 0.16, ym - sp), P(head_x, ym), P(end_x - 0.18, ym + sp)], color, e))
+            self.w = (head_x + 0.14) * t
         elif ch == "∇":
-            p.append(stroke(hand, [P(0.08, -0.7), P(0.74, -0.7), P(0.41, 0.0)], color, e, closed=True))
-            self.w = 0.84 * t
+            w_top = vr.uniform(0.62, 0.74)
+            y_top = vr.uniform(-0.74, -0.66)
+            over = vr.uniform(0.0, 0.05) if var == 1 else 0.0
+            a, b, c_pt = P(0.08, y_top), P(0.08 + w_top, y_top), P(0.08 + w_top * vr.uniform(0.45, 0.55), vr.uniform(-0.02, 0.04))
+            if var == 2:
+                # Two-stroke nabla (top bar + V)
+                p.append(stroke(hand, [a, b], color, e))
+                p.append(stroke(hand, [a, c_pt, b], color, e))
+            else:
+                p.append(stroke(hand, [a, (b[0] + over * t, b[1]), c_pt, a], color, e))
+            self.w = (0.18 + w_top) * t
         elif ch == "‖":
+            dx = vr.uniform(0.13, 0.18)
             p.append(stroke(hand, [P(0.12, -0.82), P(0.11, 0.18)], color, e))
-            p.append(stroke(hand, [P(0.27, -0.82), P(0.26, 0.18)], color, e))
-            self.w = 0.42 * t
+            p.append(stroke(hand, [P(0.12 + dx, -0.82), P(0.11 + dx, 0.18)], color, e))
+            self.w = (0.28 + dx) * t
         elif ch == "·":
             p.append((color, '<circle cx="%.1f" cy="%.1f" r="%.2f" fill="%s"/>' % (j(0.2 * t), j(-0.3 * t), 0.06 * t, color)))
             self.w = 0.4 * t
         elif ch == "≠":
-            p.append(stroke(hand, [P(0.1, -0.22), P(0.6, -0.22)], color, e))
-            p.append(stroke(hand, [P(0.1, -0.42), P(0.6, -0.42)], color, e))
-            p.append(stroke(hand, [P(0.46, -0.64), P(0.24, 0.0)], color, e))
-            self.w = 0.74 * t
+            y1, y2 = vr.uniform(-0.24, -0.18), vr.uniform(-0.45, -0.39)
+            w_bar = vr.uniform(0.46, 0.56)
+            p.append(stroke(hand, [P(0.08, y1), P(0.08 + w_bar, y1 + r.uniform(-0.03, 0.03))], color, e))
+            p.append(stroke(hand, [P(0.08, y2), P(0.08 + w_bar, y2 + r.uniform(-0.03, 0.03))], color, e))
+            sx_top = vr.uniform(0.44, 0.54)
+            sx_bot = vr.uniform(0.18, 0.28)
+            p.append(stroke(hand, [P(sx_top, vr.uniform(-0.68, -0.58)), P(sx_bot, vr.uniform(-0.04, 0.05))], color, e))
+            self.w = (0.22 + w_bar) * t
         elif ch == "≈":
-            for y in (-0.2, -0.42):
-                d = "M%.1f %.1f Q%.1f %.1f %.1f %.1f T%.1f %.1f" % (
-                    j(0.08 * t), j(y * t), j(0.2 * t), j((y - 0.12) * t), j(0.36 * t), j(y * t), j(0.64 * t), j(y * t))
-                p.append(curve(d, color, e))
-            self.w = 0.74 * t
+            amp = vr.uniform(0.09, 0.15)
+            w_w = vr.uniform(0.54, 0.64)
+            for y in (vr.uniform(-0.22, -0.17), vr.uniform(-0.45, -0.39)):
+                sgn = 1.0 if var != 2 else -1.0
+                q1 = _sample_quad(P(0.06, y), P(0.06 + w_w * 0.26, y - sgn * amp), P(0.06 + w_w * 0.5, y), 6)
+                q2 = _sample_quad(q1[-1], P(0.06 + w_w * 0.74, y + sgn * amp), P(0.06 + w_w, y + r.uniform(-0.02, 0.02)), 6)
+                p.append(_ribbon_path(q1 + q2[1:], color, e, r))
+            self.w = (0.14 + w_w) * t
         elif ch in "∫∮":
-            d = "M%.1f %.1f C%.1f %.1f %.1f %.1f %.1f %.1f L%.1f %.1f C%.1f %.1f %.1f %.1f %.1f %.1f" % (
-                j(0.46 * t), j(-0.9 * t), j(0.33 * t), j(-1.05 * t), j(0.27 * t), j(-0.9 * t),
-                j(0.27 * t), j(-0.6 * t), j(0.23 * t), j(0.05 * t),
-                j(0.22 * t), j(0.3 * t), j(0.12 * t), j(0.36 * t), j(0.03 * t), j(0.22 * t))
-            p.append(curve(d, color, e))
+            curl_top = vr.uniform(0.14, 0.24)
+            curl_bot = vr.uniform(0.14, 0.24)
+            lean = vr.uniform(0.16, 0.28)
+            top_pt = P(0.28 + lean, vr.uniform(-0.96, -0.84))
+            mid_top = P(0.24 + lean * 0.35, -0.56)
+            mid_bot = P(0.22 - lean * 0.15, 0.04)
+            bot_pt = P(0.06 - lean * 0.2, vr.uniform(0.20, 0.30))
+            s1 = _sample_cubic(top_pt, P(0.28 + lean - curl_top, -1.06), P(0.24 + lean * 0.3, -0.92), mid_top, 8)
+            s2 = _sample_quad(mid_top, P(0.23 + vr.uniform(-0.04, 0.04), -0.26), mid_bot, 6)
+            s3 = _sample_cubic(mid_bot, P(0.20 - lean * 0.1, 0.30), P(0.12 + curl_bot * 0.3, 0.38), bot_pt, 8)
+            p.append(_ribbon_path(s1 + s2[1:] + s3[1:], color, e * 1.05, r))
             if ch == "∮":
-                cx, cy, rr = 0.25 * t, -0.33 * t, 0.15 * t
-                pts = [(cx + rr * math.cos(a) + r.uniform(-0.6, 0.6), cy + rr * 1.1 * math.sin(a))
-                       for a in [2 * math.pi * i / 10 for i in range(10)]]
-                p.append(stroke(hand, pts, color, e * 0.8, closed=True))
-            self.w = 0.55 * t
+                cx, cy = 0.25 * t, -0.32 * t
+                rx, ry = vr.uniform(0.13, 0.18) * t, vr.uniform(0.15, 0.21) * t
+                start_a = vr.uniform(0, 6.28)
+                n_pts = 14
+                pts = [(cx + rx * math.cos(start_a + 2 * math.pi * i / n_pts) + r.uniform(-0.5, 0.5),
+                        cy + ry * math.sin(start_a + 2 * math.pi * i / n_pts) + r.uniform(-0.5, 0.5))
+                       for i in range(n_pts + 2)]   # slight natural overshoot at closure
+                p.append(_ribbon_path(pts, color, e * 0.85, r, closed=False))
+            self.w = (0.48 + lean * 0.45) * t
             self.asc, self.desc = 1.0 * t, 0.4 * t
             return
         self.asc, self.desc = 0.78 * t, 0.26 * t
@@ -156,6 +285,7 @@ class Row(Item):
 
     def __init__(self, items, gap=0.0):
         super().__init__()
+        self.gap = gap
         x = 0.0
         for it in items:
             self.parts += it.at(x, 0)
@@ -164,6 +294,57 @@ class Row(Item):
         self.w = x
         self.asc = max([it.asc for it in items] or [0])
         self.desc = max([it.desc for it in items] or [0])
+
+    def progressive_squeeze(self, room, rng=None, min_scale=0.58):
+        """Keep the start of a long line at full size and progressively squeeze the tail,
+        the way a human compresses the end of a line when running out of paper."""
+        if self.w <= room or len(self.items) < 2:
+            return self
+        t0 = (rng.uniform(0.36, 0.48) if rng else 0.42)
+        total = self.w
+
+        def eval_layout(alpha, g_scale=1.0):
+            x = 0.0
+            orig_x = 0.0
+            placed = []
+            for it in self.items:
+                if orig_x <= t0 * total:
+                    u = 0.0
+                else:
+                    u = min(1.0, (orig_x - t0 * total) / max(1e-6, (1.0 - t0) * total))
+                p = u ** 1.25
+                sx = max(min_scale * 0.88, (1.0 - alpha * p) * g_scale)
+                sy = max(min_scale, (1.0 - 0.75 * alpha * p) * g_scale)
+                placed.append((it, x, sx, sy))
+                x += (it.w + self.gap) * sx
+                orig_x += it.w + self.gap
+            return x, placed
+
+        # Solve tail compression alpha via binary search
+        lo, hi = 0.0, 1.0
+        for _ in range(14):
+            mid = 0.5 * (lo + hi)
+            if eval_layout(mid)[0] > room:
+                lo = mid
+            else:
+                hi = mid
+        w_tail, placed = eval_layout(hi)
+        if w_tail > room:
+            # Extremely long line: combine tail squeeze with a gentle overall scale
+            g = max(min_scale, (room / w_tail) * 0.98)
+            w_tail, placed = eval_layout(hi, g_scale=g)
+
+        out = Item()
+        for it, ix, sx, sy in placed:
+            if abs(sx - 1.0) < 1e-3 and abs(sy - 1.0) < 1e-3:
+                out.parts += it.at(ix, 0)
+            else:
+                for c, s in it.parts:
+                    out.parts.append((c, '<g transform="translate(%.2f 0) scale(%.4f %.4f)">%s</g>' % (ix, sx, sy, s)))
+            out.asc = max(out.asc, it.asc * sy)
+            out.desc = max(out.desc, it.desc * sy)
+        out.w = w_tail
+        return out
 
 
 class Scripts(Item):
@@ -198,20 +379,28 @@ class Frac(Item):
 
 
 class Root(Item):
-    """Square root: tick, long stroke up, bar over the radicand."""
+    """Square root: tick, long stroke up, bar over the radicand, with writer variation."""
 
     def __init__(self, hand, inside, size, color):
         super().__init__()
-        e = _pen(hand, size)
-        top = -inside.asc - 0.12 * size
-        bot = inside.desc + 0.02 * size
-        lw = 0.55 * size
         r = hand.rng
-        pts = [(0.02 * size, -0.3 * size), (0.14 * size, -0.36 * size), (0.3 * size, bot),
-               (lw, top), (lw + inside.w + 0.12 * size, top + r.uniform(-0.6, 0.6))]
+        vr = random.Random(_stable_seed(hand.seed, "sym", "√", r.randrange(3)))
+        e = _pen(hand, size) * r.uniform(0.92, 1.1)
+        top = -inside.asc - vr.uniform(0.09, 0.16) * size
+        bot = inside.desc + vr.uniform(-0.02, 0.06) * size
+        lw = vr.uniform(0.48, 0.60) * size
+        roof_droop = vr.uniform(-0.04, 0.05) * size + r.uniform(-0.7, 0.7)
+        over = vr.uniform(0.08, 0.20) * size
+        pts = [
+            (vr.uniform(0.0, 0.05) * size, vr.uniform(-0.34, -0.25) * size),
+            (vr.uniform(0.11, 0.18) * size, vr.uniform(-0.42, -0.32) * size),
+            (vr.uniform(0.26, 0.35) * size, bot),
+            (lw, top),
+            (lw + inside.w + over, top + roof_droop),
+        ]
         self.parts.append(stroke(hand, pts, color, e))
         self.parts += inside.at(lw + 0.04 * size, 0)
-        self.w = lw + inside.w + 0.2 * size
+        self.w = lw + inside.w + over + 0.08 * size
         self.asc, self.desc = -top + 0.05 * size, max(inside.desc, bot)
 
 
@@ -315,6 +504,12 @@ def _runs(hand, s, size, color):
             items.append(Symbol(hand, ch, size, color) if ch in DRAWN and not marks
                          else Accent(hand, ch, marks, size, color))
             i += 1 + len(marks)
+            continue
+        if ch == " " and run:
+            run += ch
+            items.append(Text(hand, run, size, color))
+            run = ""
+            i += 1
             continue
         run += ch
         i += 1

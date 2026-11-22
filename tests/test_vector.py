@@ -1,5 +1,8 @@
 """Tests for pure-vector PDF output, PDF layers, metadata, highlights, algebraic steps and SVG diagrams."""
 
+import re
+import zlib
+
 import pypdfium2 as pdfium
 import pytest
 
@@ -23,27 +26,38 @@ $$ \delta L = \bar{q} S c_{l\alpha} \delta\alpha_e \Rightarrow K_\alpha \delta\a
 <svg viewBox="0 0 300 90">
   <line x1="20" y1="45" x2="280" y2="45" stroke="#1a2b4c" stroke-width="2" stroke-linecap="round"/>
   <circle cx="90" cy="45" r="5" fill="#f33f3f"/>
-  <path d="M 90 45 L 90 12" stroke="#f33f3f" stroke-width="2" stroke-linecap="round"/>
+  <path d="M 90 45 L 90 12" fill="none" stroke="#f33f3f" stroke-width="2" stroke-linecap="round"/>
   <rect x="170" y="37" width="16" height="16" rx="3" fill="none" stroke="#1a2b4c" stroke-width="2"/>
 </svg>
 ```
 """
 
 
-def test_vector_pdf_has_zero_bitmaps_exact_size_layers_and_metadata(tmp_path):
+def test_vector_pdf_has_zero_bitmaps_exact_size_clean_metadata_and_flat_geometry(tmp_path):
     nb = render_markdown(SAMPLE_MD, paper="a4-lines", style="casual", seed=7)
     pdf_path = tmp_path / "lista03_vetorial.pdf"
     nb.save(str(pdf_path))
 
     raw = pdf_path.read_bytes()
-    assert raw.startswith(b"%PDF-1.5")
+    assert raw.startswith(b"%PDF-1.4")
     assert b"/Subtype /Image" not in raw
-    assert b"/OCProperties" in raw
+    # No tool fingerprinting in metadata or layer structure by default
+    assert b"penpad" not in raw.lower()
+    assert b"/Creator" not in raw
+    assert b"/Producer" not in raw
+    assert b"/OCProperties" not in raw
     for layer in (b"(Paper)", b"(Highlights)", b"(Diagrams)", b"(Handwriting)"):
-        assert layer in raw
-    assert b"/Creator (penpad)" in raw
-    assert b"/Producer (penpad " in raw
+        assert layer not in raw
     assert b"/Title " in raw
+
+    # Inspect decompressed page content stream: baked page coordinates, no cm, no fill+stroke (B)
+    streams = re.findall(rb"stream\n(.*?)\nendstream", raw, re.S)
+    assert streams
+    dec = zlib.decompress(streams[0]).decode("ascii")
+    lines = dec.splitlines()
+    assert not any(ln.endswith(" cm") for ln in lines), "expected baked page-space coordinates without cm"
+    assert not any(ln in ("B", "B*") for ln in lines), "expected pure filled strokes (f), never fill+stroke (B)"
+    assert any(ln == "f" for ln in lines)
 
     # Verify with pdfium: exact A4 dimensions and rendered content is non-blank
     doc = pdfium.PdfDocument(str(pdf_path))
@@ -56,6 +70,15 @@ def test_vector_pdf_has_zero_bitmaps_exact_size_layers_and_metadata(tmp_path):
     extrema = img.getextrema()
     # Must contain dark ink pixels (not an all-white page)
     assert min(lo for lo, _ in extrema) < 80
+
+
+def test_vector_pdf_opt_in_layers(tmp_path):
+    nb = render_markdown("# Hello\nworld\n", paper="a4-lines", seed=1)
+    raw = nb.render_pdf_bytes(vector_pdf=True, layers=True)
+    assert raw.startswith(b"%PDF-1.5")
+    assert b"/OCProperties" in raw
+    for layer in (b"(Paper)", b"(Highlights)", b"(Diagrams)", b"(Handwriting)"):
+        assert layer in raw
 
 
 def test_vector_pdf_is_compact(tmp_path):

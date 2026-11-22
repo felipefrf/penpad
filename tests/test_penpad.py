@@ -41,10 +41,17 @@ def test_bundled_fonts_need_no_system_fonts():
 
 
 def test_repeated_letters_are_never_identical():
-    svg = svg_of("aaaaaaaa")
+    # Spaced letters emit individual paths, none identical
+    svg = svg_of("a a a a a a a a")
     paths = re.findall(r'<path d="([^"]+)"', svg)
     assert len(paths) == 8
     assert len(set(paths)) == 8
+
+    # Adjacent letters in cursive merge into fewer continuous multi-letter strokes
+    joined_svg = svg_of("aaaaaaaa")
+    joined_paths = re.findall(r'<path d="([^"]+)"', joined_svg)
+    assert 1 <= len(joined_paths) < 8
+    assert len(set(joined_paths)) == len(joined_paths)
 
 
 def test_allographs_never_repeat_back_to_back():
@@ -59,16 +66,18 @@ def test_allographs_never_repeat_back_to_back():
 
 def test_variation_stays_legible():
     hand = Hand(get_style("cursive", jitter=3.0, looseness=3.0), 9)
-    svg = hand.write(0, 0, "legibility " * 40, "#000000", 24)[0]
-    for rot, skew, sx in re.findall(r"rotate\(([-\d.]+)\) skewX\(([-\d.]+)\) scale\(([-\d.]+)", svg):
-        assert abs(float(rot)) <= 9.0 + 1e-6
-        assert abs(float(skew)) <= 14.0 + 1e-6
+    hand.write(0, 0, "legibility " * 40, "#000000", 24)
+    assert hand._history
+    for rot, skew, grow in hand._history:
+        assert abs(rot) <= 9.0 + 1e-6
+        assert abs(skew) <= 14.0 + 1e-6
+        assert abs(grow) <= 0.18 + 1e-6
 
 
 def test_slant_is_correlated_between_neighbours():
     hand = Hand(get_style("cursive"), 2)
-    svg = hand.write(0, 0, "x" * 400, "#000000", 24)[0]
-    skews = [float(s) for s in re.findall(r"skewX\(([-\d.]+)\)", svg)]
+    hand.write(0, 0, "x" * 400, "#000000", 24)
+    skews = [skew for _, skew, _ in hand._history]
     mean = sum(skews) / len(skews)
     d = [s - mean for s in skews]
     lag1 = sum(a * b for a, b in zip(d, d[1:])) / sum(a * a for a in d)
@@ -101,6 +110,28 @@ def test_wide_equation_shrinks_to_fit(caplog):
     xs = [float(x) for x in re.findall(r"translate\(([-\d.]+) ", "".join(s for _, s in nb.page["inked"]))]
     assert max(xs) < nb.W
     assert not caplog.records
+
+
+def test_long_equation_progressively_squeezes_tail():
+    from penpad.layout import Row, parse
+    hand = Hand(get_style("cursive"), 4)
+    row = Row(parse(hand, "a + b + c + d + e + f + g + h + i + j + k + l", 24, "#000000"))
+    room = row.w * 0.80
+    sq = row.progressive_squeeze(room, rng=hand.rng)
+    assert sq.w <= room + 1e-3
+    # Leading items stay at full scale (no scale(...) wrapper), trailing items are squeezed
+    scales = [float(sx) for sx in re.findall(r"scale\(([0-9.]+) ", "".join(s for _, s in sq.parts))]
+    assert scales, "expected tail items to be squeezed"
+    assert scales[0] > scales[-1], "expected progressive squeeze toward the end of the line"
+
+
+def test_math_symbols_vary_geometrically():
+    from penpad.layout import Symbol
+    hand = Hand(get_style("cursive"), 11)
+    for ch in ("∫", "∮", "∇", "→", "⇒", "≠", "≈"):
+        draws = ["".join(s for _, s in Symbol(hand, ch, 24, "#000000").parts) for _ in range(5)]
+        assert len(set(draws)) == 5, "symbol %r should vary across instances" % ch
+        assert all('stroke="' not in d for d in draws), "symbol %r should use pure filled strokes" % ch
 
 
 def test_literal_text_is_not_parsed_as_math():

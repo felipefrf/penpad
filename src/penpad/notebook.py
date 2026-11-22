@@ -10,9 +10,9 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ProcessPoolExecutor
 
 from . import raster, vector
-from .hand import Hand, hand_line
+from .hand import Hand, _OU, hand_line
 from .latex import escape_text, latex_to_markup
-from .layout import Box, Row, parse, stroke, words
+from .layout import Box, Item, Row, parse, stroke, words
 from .paper import get_paper
 from .styles import get_style, ink
 
@@ -58,6 +58,7 @@ class Notebook:
     # ------------------------------------------------------------------ pages
     def new_page(self):
         self.hand = Hand(self.style, self.seed * 1000 + len(self.pages))
+        self._margin_ou = _OU(self.hand.rng, 0.78)
         self.page = {"highlights": [], "strokes": [], "inked": []}
         self.pages.append(self.page)
         self.cursor = self.G * 2.2
@@ -81,7 +82,18 @@ class Notebook:
         tol = 0.35 * self.size if self.paper.ruling == "grid" else 0.0
         if self._last_desc > 0.6 * self.size:
             tol = 0
-        return math.ceil((self.cursor + asc + 3 - tol) / self.G) * self.G
+        snapped = math.ceil((self.cursor + asc + 3 - tol) / self.G) * self.G
+        bj = self.style.get("baseline_jitter", 0.0)
+        if bj > 0:
+            off = max(-0.14 * self.G, min(0.14 * self.G, self.hand.rng.gauss(0, bj * self.G)))
+            snapped += off
+        return snapped
+
+    def _margin_offset(self):
+        mj = self.style.get("margin_jitter", 0.0)
+        if mj <= 0:
+            return 0.0
+        return max(-0.35 * self.M, min(0.45 * self.M, self._margin_ou.step(mj)))
 
     def place(self, item, x, y):
         for c, svg in item.at(x, y):
@@ -90,20 +102,31 @@ class Notebook:
             else:
                 self.page["inked"].append((c, svg))
 
-    def _line(self, item, x, before=0):
+    def _line(self, item, x, before=0, jitter_margin=True):
         self.cursor += before
         base = self._baseline(item.asc)
         if base + item.desc > self._bottom() and not self._empty():
             self.new_page()
             base = self._baseline(item.asc)
-        self.place(item, x, base)
+        mx = x + (self._margin_offset() if jitter_margin else 0.0)
+        # Keep squeezed lines inside the right edge
+        if mx + item.w > self.W - self.M * 0.4:
+            mx = max(self.M * 0.5, min(mx, self.W - self.M * 0.4 - item.w))
+        self.place(item, mx, base)
         self.cursor = base + item.desc
         self._last_desc = item.desc
         return base
 
-    def _fit(self, build, size, room, what):
-        """Build an item, shrinking the letters (as people do) until it fits in room px."""
+    def _fit(self, build, size, room, what, progressive=False):
+        """Build an item, squeezing the tail first (progressive) or shrinking to fit room px."""
         it = build(size)
+        if it.w <= room:
+            return it
+        if progressive and isinstance(it, Row) and len(it.items) >= 3:
+            squeezed = it.progressive_squeeze(room, rng=self.hand.rng, min_scale=MIN_FIT)
+            if squeezed.w <= room:
+                return squeezed
+            it = squeezed
         k = 1.0
         while it.w > room and k > MIN_FIT:
             k = max(MIN_FIT, k * max(0.85, room / it.w * 0.98))
@@ -136,6 +159,29 @@ class Notebook:
         it = self._fit(lambda t: Row(parse(self.hand, s, t, color)), self.size * 1.08, self.W - 2 * self.M, s)
         self._line(it, self.M, before=self.G * 0.3)
 
+    def _false_start(self, word, size, color):
+        """Occasional 2-3 letter false start crossed out with a quick hand stroke."""
+        r = self.hand.rng
+        prefix = word[:r.choice((2, 3))]
+        it = Row(parse(self.hand, prefix, size, color))
+        pw = self.style["pen_width"] * size
+        ym = -0.30 * size + r.uniform(-0.08, 0.08) * size
+        # Quick horizontal/slightly diagonal strikethrough
+        it.parts.append(stroke(
+            self.hand,
+            [(-0.06 * size, ym + r.uniform(-0.06, 0.06) * size),
+             (it.w + 0.08 * size, ym + r.uniform(-0.08, 0.08) * size)],
+            color, pw * 0.95,
+        ))
+        if r.random() < 0.45:
+            it.parts.append(stroke(
+                self.hand,
+                [(-0.02 * size, ym + 0.14 * size),
+                 (it.w + 0.04 * size, ym - 0.14 * size)],
+                color, pw * 0.85,
+            ))
+        return it
+
     def text(self, s, indent=0, hanging=0, color="black", size=None, markup=True):
         """Paragraph with word wrap. ``hanging`` indents the lines after the first.
 
@@ -146,9 +192,19 @@ class Notebook:
             s = escape_text(s)
         width = self.W - 2 * self.M - indent
         space = 0.42 * size
+        corr_rate = self.style.get("correction_rate", 0.0)
         line, w, first = [], 0.0, True
         for word in words(s):
             room = width - (0 if first else hanging)
+            # Subtle occasional false-start + strikethrough on plain alphabetic prose words
+            if (corr_rate > 0 and len(word) >= 5 and word.isalpha()
+                    and self.hand.rng.random() < corr_rate):
+                fs = self._false_start(word, size, color)
+                if line and w + space + fs.w > room:
+                    self._line(Row(line, space), self.M + indent + (0 if first else hanging))
+                    line, w, first = [], 0.0, False
+                w += (space if line else 0) + fs.w
+                line.append(fs)
             it = self._fit(lambda t: Row(parse(self.hand, word, t, color)), size, room, word)
             if line and w + space + it.w > room:
                 self._line(Row(line, space), self.M + indent + (0 if first else hanging))
@@ -159,17 +215,18 @@ class Notebook:
             self._line(Row(line, space), self.M + indent + (0 if first else hanging))
 
     def eq(self, s, indent=36, center=False, box=False, color="black", box_color="red", size=None):
-        """One line of penpad math markup. Too wide? The letters get smaller, like on paper."""
+        """One line of penpad math markup. Too wide? Squeezes the tail first, like on paper."""
         color, box_color, size = ink(color), ink(box_color), size or self.size
         indent = 0 if center else indent * self.size / 24
-
-        def build(t):
-            it = Row(parse(self.hand, s, t, color))
-            return Box(self.hand, it, t, box_color) if box else it
-
-        it = self._fit(build, size, self.W - 2 * self.M - indent, s)
+        room = self.W - 2 * self.M - indent
+        if box:
+            inner_room = max(room - 0.8 * size, room * 0.85)
+            inner = self._fit(lambda t: Row(parse(self.hand, s, t, color)), size, inner_room, s, progressive=True)
+            it = Box(self.hand, inner, size, box_color)
+        else:
+            it = self._fit(lambda t: Row(parse(self.hand, s, t, color)), size, room, s, progressive=True)
         x = (self.W - it.w) / 2 if center else self.M + indent
-        self._line(it, x, before=4 if it.asc > size else 0)
+        self._line(it, x, before=4 if it.asc > size else 0, jitter_margin=not center)
 
     def math(self, latex, **kw):
         """Like eq, but takes LaTeX: ``nb.math(r"\\int_0^1 x^2\\,dx = \\frac{1}{3}")``."""
@@ -350,12 +407,12 @@ class Notebook:
         with ProcessPoolExecutor(jobs) as pool:
             return list(pool.map(_render_page, work))
 
-    def render_pdf_bytes(self, vector_pdf=True, dpi=raster.DEFAULT_DPI, jobs=1) -> bytes:
+    def render_pdf_bytes(self, vector_pdf=True, dpi=raster.DEFAULT_DPI, jobs=1, layers=False) -> bytes:
         """Return the document as PDF bytes (pure vector by default, or rasterized if vector_pdf=False)."""
         if vector_pdf:
             return vector.build_pdf_bytes(
                 self._pages_with_footers(), self.paper.width_pt, self.paper.height_pt,
-                self.W, self.H, self.paper.svg(), title=self.doc_title,
+                self.W, self.H, self.paper.svg(), title=self.doc_title, layers=layers,
             )
         import io
         images = self.render(dpi, jobs)
@@ -364,7 +421,7 @@ class Notebook:
                        resolution=images[0].width / (self.paper.width_pt / 72))
         return buf.getvalue()
 
-    def save(self, path, dpi=raster.DEFAULT_DPI, jobs=1, vector_pdf=True):
+    def save(self, path, dpi=raster.DEFAULT_DPI, jobs=1, vector_pdf=True, layers=False):
         """Save as .pdf (pure vector by default), .svg (layered vector) or .png (one file per page)."""
         root, ext = os.path.splitext(path)
         ext_l = ext.lower()
@@ -372,7 +429,7 @@ class Notebook:
             if vector_pdf:
                 vector.save_pdf(
                     self._pages_with_footers(), path, self.paper.width_pt, self.paper.height_pt,
-                    self.W, self.H, self.paper.svg(), title=self.doc_title,
+                    self.W, self.H, self.paper.svg(), title=self.doc_title, layers=layers,
                 )
                 return [path]
             images = self.render(dpi, jobs)

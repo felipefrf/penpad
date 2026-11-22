@@ -1,8 +1,8 @@
-"""Pure-Python SVG -> Vector PDF 1.5 compiler and SVG exporter.
+"""Pure-Python SVG -> Vector PDF compiler and SVG exporter.
 
-Every paper rule, highlight, diagram stroke and handwritten glyph becomes an
-independent vector path in the PDF (zero embedded bitmaps), organized into
-Optional Content Groups (PDF layers): Paper, Highlights, Diagrams, Handwriting.
+Every paper rule, highlight, diagram stroke and handwritten stroke becomes a
+native page-space vector path in the PDF (zero embedded bitmaps, zero per-glyph
+transformation matrices, flat content stream by default).
 """
 
 from __future__ import annotations
@@ -13,8 +13,6 @@ import os
 import re
 import xml.etree.ElementTree as ET
 import zlib
-
-from . import __version__
 
 _NUM_RE = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
 _PATH_TOKEN_RE = re.compile(r"[MmLlHhVvCcSsQqTtZz]|[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
@@ -44,7 +42,7 @@ def _fmt(v: float, prec: int = 4) -> str:
 
 
 def _fc(v: float) -> str:
-    """Compact path coordinate (1 decimal place — 0.02 mm precision on A4, high compression)."""
+    """Compact path coordinate (1 decimal place in PDF pt — 0.035 mm precision, high compression)."""
     return _fmt(v, 1)
 
 
@@ -110,6 +108,16 @@ def _mat_mul(m1, m2):
     )
 
 
+def _apply_ctm(ctm, x: float, y: float) -> tuple[float, float]:
+    a, b, c, d, e, f = ctm
+    return a * x + c * y + e, b * x + d * y + f
+
+
+def _ctm_scale(ctm) -> float:
+    a, b, c, d, _, _ = ctm
+    return math.sqrt(abs(a * d - b * c))
+
+
 def _parse_transform(s: str | None):
     if not s:
         return None
@@ -149,7 +157,7 @@ def _parse_transform(s: str | None):
 
 
 # ------------------------------------------------------------ SVG path -> PDF
-def _path_to_pdf(d: str) -> list[str]:
+def _path_to_pdf(d: str, ctm) -> list[str]:
     tokens = _PATH_TOKEN_RE.findall(d)
     if not tokens:
         return []
@@ -162,6 +170,10 @@ def _path_to_pdf(d: str) -> list[str]:
     last_c2 = None
     last_q1 = None
     prev_cmd = ""
+    a, b, c, dm, e, f = ctm
+
+    def pt(x: float, y: float) -> tuple[str, str]:
+        return _fc(a * x + c * y + e), _fc(b * x + dm * y + f)
 
     def next_f() -> float:
         nonlocal i
@@ -188,7 +200,7 @@ def _path_to_pdf(d: str) -> list[str]:
                 y += cy
             cx, cy = x, y
             sx, sy = x, y
-            ops.append("%s %s m" % (_fc(cx), _fc(cy)))
+            ops.append("%s %s m" % pt(cx, cy))
             last_c2 = last_q1 = None
             prev_cmd = cmd
             while is_num(i):
@@ -197,7 +209,7 @@ def _path_to_pdf(d: str) -> list[str]:
                     x += cx
                     y += cy
                 cx, cy = x, y
-                ops.append("%s %s l" % (_fc(cx), _fc(cy)))
+                ops.append("%s %s l" % pt(cx, cy))
                 prev_cmd = "l" if cmd == "m" else "L"
         elif cmd in ("L", "l"):
             while is_num(i):
@@ -206,21 +218,21 @@ def _path_to_pdf(d: str) -> list[str]:
                     x += cx
                     y += cy
                 cx, cy = x, y
-                ops.append("%s %s l" % (_fc(cx), _fc(cy)))
+                ops.append("%s %s l" % pt(cx, cy))
             last_c2 = last_q1 = None
             prev_cmd = cmd
         elif cmd in ("H", "h"):
             while is_num(i):
                 x = next_f()
                 cx = cx + x if cmd == "h" else x
-                ops.append("%s %s l" % (_fc(cx), _fc(cy)))
+                ops.append("%s %s l" % pt(cx, cy))
             last_c2 = last_q1 = None
             prev_cmd = cmd
         elif cmd in ("V", "v"):
             while is_num(i):
                 y = next_f()
                 cy = cy + y if cmd == "v" else y
-                ops.append("%s %s l" % (_fc(cx), _fc(cy)))
+                ops.append("%s %s l" % pt(cx, cy))
             last_c2 = last_q1 = None
             prev_cmd = cmd
         elif cmd in ("C", "c"):
@@ -233,8 +245,10 @@ def _path_to_pdf(d: str) -> list[str]:
                     y2 += cy
                     x += cx
                     y += cy
-                ops.append("%s %s %s %s %s %s c" % (
-                    _fc(x1), _fc(y1), _fc(x2), _fc(y2), _fc(x), _fc(y)))
+                p1x, p1y = pt(x1, y1)
+                p2x, p2y = pt(x2, y2)
+                px, py = pt(x, y)
+                ops.append("%s %s %s %s %s %s c" % (p1x, p1y, p2x, p2y, px, py))
                 last_c2 = (x2, y2)
                 cx, cy = x, y
             last_q1 = None
@@ -252,8 +266,10 @@ def _path_to_pdf(d: str) -> list[str]:
                     y1 = 2 * cy - last_c2[1]
                 else:
                     x1, y1 = cx, cy
-                ops.append("%s %s %s %s %s %s c" % (
-                    _fc(x1), _fc(y1), _fc(x2), _fc(y2), _fc(x), _fc(y)))
+                p1x, p1y = pt(x1, y1)
+                p2x, p2y = pt(x2, y2)
+                px, py = pt(x, y)
+                ops.append("%s %s %s %s %s %s c" % (p1x, p1y, p2x, p2y, px, py))
                 last_c2 = (x2, y2)
                 cx, cy = x, y
                 prev_cmd = cmd
@@ -271,8 +287,10 @@ def _path_to_pdf(d: str) -> list[str]:
                 c1y = cy + (2.0 / 3.0) * (qy - cy)
                 c2x = x + (2.0 / 3.0) * (qx - x)
                 c2y = y + (2.0 / 3.0) * (qy - y)
-                ops.append("%s %s %s %s %s %s c" % (
-                    _fc(c1x), _fc(c1y), _fc(c2x), _fc(c2y), _fc(x), _fc(y)))
+                p1x, p1y = pt(c1x, c1y)
+                p2x, p2y = pt(c2x, c2y)
+                px, py = pt(x, y)
+                ops.append("%s %s %s %s %s %s c" % (p1x, p1y, p2x, p2y, px, py))
                 last_q1 = (qx, qy)
                 cx, cy = x, y
                 prev_cmd = cmd
@@ -292,8 +310,10 @@ def _path_to_pdf(d: str) -> list[str]:
                 c1y = cy + (2.0 / 3.0) * (qy - cy)
                 c2x = x + (2.0 / 3.0) * (qx - x)
                 c2y = y + (2.0 / 3.0) * (qy - y)
-                ops.append("%s %s %s %s %s %s c" % (
-                    _fc(c1x), _fc(c1y), _fc(c2x), _fc(c2y), _fc(x), _fc(y)))
+                p1x, p1y = pt(c1x, c1y)
+                p2x, p2y = pt(c2x, c2y)
+                px, py = pt(x, y)
+                ops.append("%s %s %s %s %s %s c" % (p1x, p1y, p2x, p2y, px, py))
                 last_q1 = (qx, qy)
                 cx, cy = x, y
                 prev_cmd = cmd
@@ -308,41 +328,61 @@ def _path_to_pdf(d: str) -> list[str]:
     return ops
 
 
-def _ellipse_to_pdf(cx: float, cy: float, rx: float, ry: float) -> list[str]:
+def _ellipse_to_pdf(cx: float, cy: float, rx: float, ry: float, ctm) -> list[str]:
     kx, ky = rx * _KAPPA, ry * _KAPPA
+
+    def p(x: float, y: float) -> tuple[str, str]:
+        px, py = _apply_ctm(ctm, x, y)
+        return _fc(px), _fc(py)
+
     return [
-        "%s %s m" % (_fmt(cx + rx), _fmt(cy)),
-        "%s %s %s %s %s %s c" % (
-            _fmt(cx + rx), _fmt(cy + ky), _fmt(cx + kx), _fmt(cy + ry), _fmt(cx), _fmt(cy + ry)),
-        "%s %s %s %s %s %s c" % (
-            _fmt(cx - kx), _fmt(cy + ry), _fmt(cx - rx), _fmt(cy + ky), _fmt(cx - rx), _fmt(cy)),
-        "%s %s %s %s %s %s c" % (
-            _fmt(cx - rx), _fmt(cy - ky), _fmt(cx - kx), _fmt(cy - ry), _fmt(cx), _fmt(cy - ry)),
-        "%s %s %s %s %s %s c" % (
-            _fmt(cx + kx), _fmt(cy - ry), _fmt(cx + rx), _fmt(cy - ky), _fmt(cx + rx), _fmt(cy)),
+        "%s %s m" % p(cx + rx, cy),
+        "%s %s %s %s %s %s c" % (*p(cx + rx, cy + ky), *p(cx + kx, cy + ry), *p(cx, cy + ry)),
+        "%s %s %s %s %s %s c" % (*p(cx - kx, cy + ry), *p(cx - rx, cy + ky), *p(cx - rx, cy)),
+        "%s %s %s %s %s %s c" % (*p(cx - rx, cy - ky), *p(cx - kx, cy - ry), *p(cx, cy - ry)),
+        "%s %s %s %s %s %s c" % (*p(cx + kx, cy - ry), *p(cx + rx, cy - ky), *p(cx + rx, cy)),
         "h",
     ]
 
 
-def _rect_to_pdf(x: float, y: float, w: float, h: float, rx: float = 0.0, ry: float = 0.0) -> list[str]:
+def _rect_to_pdf(x: float, y: float, w: float, h: float, rx: float, ry: float, ctm) -> list[str]:
     if w <= 0 or h <= 0:
         return []
     if rx <= 0 and ry <= 0:
-        return ["%s %s %s %s re" % (_fmt(x), _fmt(y), _fmt(w), _fmt(h))]
+        a, b, c, dm, _, _ = ctm
+        if abs(b) < 1e-9 and abs(c) < 1e-9:
+            x0, y0 = _apply_ctm(ctm, x, y)
+            x1, y1 = _apply_ctm(ctm, x + w, y + h)
+            rx0, ry0 = min(x0, x1), min(y0, y1)
+            rw, rh = abs(x1 - x0), abs(y1 - y0)
+            return ["%s %s %s %s re" % (_fc(rx0), _fc(ry0), _fc(rw), _fc(rh))]
+        pts = [_apply_ctm(ctm, px, py) for px, py in ((x, y), (x + w, y), (x + w, y + h), (x, y + h))]
+        return [
+            "%s %s m" % (_fc(pts[0][0]), _fc(pts[0][1])),
+            "%s %s l" % (_fc(pts[1][0]), _fc(pts[1][1])),
+            "%s %s l" % (_fc(pts[2][0]), _fc(pts[2][1])),
+            "%s %s l" % (_fc(pts[3][0]), _fc(pts[3][1])),
+            "h",
+        ]
     rx = min(rx or ry, w / 2.0)
     ry = min(ry or rx, h / 2.0)
     kx, ky = rx * _KAPPA, ry * _KAPPA
     x0, y0, x1, y1 = x, y, x + w, y + h
+
+    def p(px: float, py: float) -> tuple[str, str]:
+        tx, ty = _apply_ctm(ctm, px, py)
+        return _fc(tx), _fc(ty)
+
     return [
-        "%s %s m" % (_fmt(x0 + rx), _fmt(y0)),
-        "%s %s l" % (_fmt(x1 - rx), _fmt(y0)),
-        "%s %s %s %s %s %s c" % (_fmt(x1 - rx + kx), _fmt(y0), _fmt(x1), _fmt(y0 + ry - ky), _fmt(x1), _fmt(y0 + ry)),
-        "%s %s l" % (_fmt(x1), _fmt(y1 - ry)),
-        "%s %s %s %s %s %s c" % (_fmt(x1), _fmt(y1 - ry + ky), _fmt(x1 - rx + kx), _fmt(y1), _fmt(x1 - rx), _fmt(y1)),
-        "%s %s l" % (_fmt(x0 + rx), _fmt(y1)),
-        "%s %s %s %s %s %s c" % (_fmt(x0 + rx - kx), _fmt(y1), _fmt(x0), _fmt(y1 - ry + ky), _fmt(x0), _fmt(y1 - ry)),
-        "%s %s l" % (_fmt(x0), _fmt(y0 + ry)),
-        "%s %s %s %s %s %s c" % (_fmt(x0), _fmt(y0 + ry - ky), _fmt(x0 + rx - kx), _fmt(y0), _fmt(x0 + rx), _fmt(y0)),
+        "%s %s m" % p(x0 + rx, y0),
+        "%s %s l" % p(x1 - rx, y0),
+        "%s %s %s %s %s %s c" % (*p(x1 - rx + kx, y0), *p(x1, y0 + ry - ky), *p(x1, y0 + ry)),
+        "%s %s l" % p(x1, y1 - ry),
+        "%s %s %s %s %s %s c" % (*p(x1, y1 - ry + ky), *p(x1 - rx + kx, y1), *p(x1 - rx, y1)),
+        "%s %s l" % p(x0 + rx, y1),
+        "%s %s %s %s %s %s c" % (*p(x0 + rx - kx, y1), *p(x0, y1 - ry + ky), *p(x0, y1 - ry)),
+        "%s %s l" % p(x0, y0 + ry),
+        "%s %s %s %s %s %s c" % (*p(x0, y0 + ry - ky), *p(x0 + rx - kx, y0), *p(x0 + rx, y0)),
         "h",
     ]
 
@@ -366,11 +406,21 @@ _JOIN_MAP = {"miter": 0, "round": 1, "bevel": 2}
 
 
 class _StreamBuilder:
-    """Walks parsed SVG fragments and emits PDF content stream commands."""
+    """Walks parsed SVG fragments and emits page-space PDF content stream commands."""
 
-    def __init__(self):
+    def __init__(self, root_ctm):
+        self.root_ctm = root_ctm
         self.cmds: list[str] = []
         self.extgstates: dict[tuple[float, float], str] = {}
+        self._reset_state()
+
+    def _reset_state(self):
+        self._fill_rgb = None
+        self._stroke_rgb = None
+        self._lw = None
+        self._cap = None
+        self._join = None
+        self._dash = None
 
     def _gs_name(self, fill_a: float, stroke_a: float) -> str | None:
         fa = round(max(0.0, min(1.0, fill_a)), 3)
@@ -387,9 +437,9 @@ class _StreamBuilder:
             return
         root = ET.fromstring("<svg>%s</svg>" % fragment)
         for child in root:
-            self._walk(child, _DEFAULT_STATE)
+            self._walk(child, _DEFAULT_STATE, self.root_ctm)
 
-    def _walk(self, elem: ET.Element, inherited: dict):
+    def _walk(self, elem: ET.Element, inherited: dict, ctm):
         tag = elem.tag.split("}")[-1].lower()
         if tag in ("defs", "style", "title", "desc", "metadata"):
             return
@@ -413,20 +463,18 @@ class _StreamBuilder:
             st["stroke-opacity"] = _parse_float(attr("stroke-opacity"), 1.0)
 
         tr = _parse_transform(elem.attrib.get("transform"))
+        cur_ctm = _mat_mul(ctm, tr) if tr else ctm
+
         if tag in ("g", "svg"):
-            if tr:
-                self.cmds.append("q %s cm" % " ".join(_fmt(v) for v in tr))
             for child in elem:
-                self._walk(child, st)
-            if tr:
-                self.cmds.append("Q")
+                self._walk(child, st, cur_ctm)
             return
 
-        path_ops = self._shape_ops(tag, elem)
+        path_ops = self._shape_ops(tag, elem, cur_ctm)
         if not path_ops:
             return
 
-        fill_rgba = _parse_color(st["fill"])
+        fill_rgba = None if tag == "line" else _parse_color(st["fill"])
         stroke_rgba = _parse_color(st["stroke"])
         if fill_rgba is None and stroke_rgba is None:
             return
@@ -435,28 +483,45 @@ class _StreamBuilder:
         stroke_a = (stroke_rgba[3] * st["stroke-opacity"] * st["opacity"]) if stroke_rgba else 1.0
         gs = self._gs_name(fill_a, stroke_a)
 
-        self.cmds.append("q")
-        if tr:
-            self.cmds.append("%s cm" % " ".join(_fmt(v) for v in tr))
+        saved_state = None
         if gs:
+            saved_state = (self._fill_rgb, self._stroke_rgb, self._lw, self._cap, self._join, self._dash)
+            self.cmds.append("q")
             self.cmds.append("/%s gs" % gs)
+
         if fill_rgba is not None:
-            self.cmds.append("%s %s %s rg" % (_frgb(fill_rgba[0]), _frgb(fill_rgba[1]), _frgb(fill_rgba[2])))
+            frgb = (_frgb(fill_rgba[0]), _frgb(fill_rgba[1]), _frgb(fill_rgba[2]))
+            if frgb != self._fill_rgb:
+                self.cmds.append("%s %s %s rg" % frgb)
+                self._fill_rgb = frgb
+
         if stroke_rgba is not None:
-            self.cmds.append("%s %s %s RG" % (_frgb(stroke_rgba[0]), _frgb(stroke_rgba[1]), _frgb(stroke_rgba[2])))
-            sw = _parse_float(st["stroke-width"], 1.0)
-            self.cmds.append("%s w" % _fc(sw))
+            srgb = (_frgb(stroke_rgba[0]), _frgb(stroke_rgba[1]), _frgb(stroke_rgba[2]))
+            if srgb != self._stroke_rgb:
+                self.cmds.append("%s %s %s RG" % srgb)
+                self._stroke_rgb = srgb
+            scale = _ctm_scale(cur_ctm)
+            sw = _fc(_parse_float(st["stroke-width"], 1.0) * scale)
+            if sw != self._lw:
+                self.cmds.append("%s w" % sw)
+                self._lw = sw
             cap = _CAP_MAP.get(st["stroke-linecap"].strip().lower())
-            if cap is not None:
+            if cap is not None and cap != self._cap:
                 self.cmds.append("%d J" % cap)
+                self._cap = cap
             join = _JOIN_MAP.get(st["stroke-linejoin"].strip().lower())
-            if join is not None:
+            if join is not None and join != self._join:
                 self.cmds.append("%d j" % join)
+                self._join = join
             dash = st["stroke-dasharray"].strip().lower()
             if dash and dash != "none":
-                nums = [_fmt(float(x)) for x in _NUM_RE.findall(dash)]
-                if nums:
-                    self.cmds.append("[%s] 0 d" % " ".join(nums))
+                nums = [_fc(float(x) * scale) for x in _NUM_RE.findall(dash)]
+                dash_cmd = "[%s] 0 d" % " ".join(nums) if nums else "[] 0 d"
+            else:
+                dash_cmd = "[] 0 d"
+            if dash_cmd != self._dash and (dash_cmd != "[] 0 d" or self._dash is not None):
+                self.cmds.append(dash_cmd)
+                self._dash = dash_cmd
 
         self.cmds.extend(path_ops)
 
@@ -467,40 +532,49 @@ class _StreamBuilder:
             self.cmds.append("f*" if even_odd else "f")
         else:
             self.cmds.append("S")
-        self.cmds.append("Q")
 
-    def _shape_ops(self, tag: str, elem: ET.Element) -> list[str]:
+        if gs:
+            self.cmds.append("Q")
+            (self._fill_rgb, self._stroke_rgb, self._lw,
+             self._cap, self._join, self._dash) = saved_state
+
+    def _shape_ops(self, tag: str, elem: ET.Element, ctm) -> list[str]:
         a = elem.attrib
         if tag == "path":
-            return _path_to_pdf(a.get("d", ""))
+            return _path_to_pdf(a.get("d", ""), ctm)
         if tag == "rect":
             return _rect_to_pdf(
                 _parse_float(a.get("x")), _parse_float(a.get("y")),
                 _parse_float(a.get("width")), _parse_float(a.get("height")),
                 _parse_float(a.get("rx")), _parse_float(a.get("ry")),
+                ctm,
             )
         if tag == "circle":
             r = _parse_float(a.get("r"))
             if r <= 0:
                 return []
-            return _ellipse_to_pdf(_parse_float(a.get("cx")), _parse_float(a.get("cy")), r, r)
+            return _ellipse_to_pdf(_parse_float(a.get("cx")), _parse_float(a.get("cy")), r, r, ctm)
         if tag == "ellipse":
             rx, ry = _parse_float(a.get("rx")), _parse_float(a.get("ry"))
             if rx <= 0 or ry <= 0:
                 return []
-            return _ellipse_to_pdf(_parse_float(a.get("cx")), _parse_float(a.get("cy")), rx, ry)
+            return _ellipse_to_pdf(_parse_float(a.get("cx")), _parse_float(a.get("cy")), rx, ry, ctm)
         if tag == "line":
+            x1, y1 = _apply_ctm(ctm, _parse_float(a.get("x1")), _parse_float(a.get("y1")))
+            x2, y2 = _apply_ctm(ctm, _parse_float(a.get("x2")), _parse_float(a.get("y2")))
             return [
-                "%s %s m" % (_fmt(_parse_float(a.get("x1"))), _fmt(_parse_float(a.get("y1")))),
-                "%s %s l" % (_fmt(_parse_float(a.get("x2"))), _fmt(_parse_float(a.get("y2")))),
+                "%s %s m" % (_fc(x1), _fc(y1)),
+                "%s %s l" % (_fc(x2), _fc(y2)),
             ]
         if tag in ("polyline", "polygon"):
             nums = [float(x) for x in _NUM_RE.findall(a.get("points", ""))]
             if len(nums) < 4:
                 return []
-            ops = ["%s %s m" % (_fmt(nums[0]), _fmt(nums[1]))]
+            x0, y0 = _apply_ctm(ctm, nums[0], nums[1])
+            ops = ["%s %s m" % (_fc(x0), _fc(y0))]
             for j in range(2, len(nums) - 1, 2):
-                ops.append("%s %s l" % (_fmt(nums[j]), _fmt(nums[j + 1])))
+                px, py = _apply_ctm(ctm, nums[j], nums[j + 1])
+                ops.append("%s %s l" % (_fc(px), _fc(py)))
             if tag == "polygon":
                 ops.append("h")
             return ops
@@ -541,8 +615,10 @@ def page_svg(w: int, h: int, paper_svg: str, highlights: list[str],
 
 
 def build_pdf_bytes(pages: list[dict], width_pt: float, height_pt: float,
-                    w: int, h: int, paper_svg: str, title: str | None = None) -> bytes:
-    """Compile notebook pages into a compressed, layered vector PDF 1.5."""
+                    w: int, h: int, paper_svg: str, title: str | None = None,
+                    *, layers: bool = False, creator: str | None = None,
+                    producer: str | None = None) -> bytes:
+    """Compile notebook pages into a compressed vector PDF (flat by default)."""
     objects: list[bytes] = []
 
     def add_obj(body: bytes) -> int:
@@ -553,7 +629,6 @@ def build_pdf_bytes(pages: list[dict], width_pt: float, height_pt: float,
     add_obj(b"")
     add_obj(b"")
 
-    # Optional Content Groups (PDF layers)
     layer_names = [
         ("L_Paper", "Paper"),
         ("L_Highlights", "Highlights"),
@@ -561,43 +636,49 @@ def build_pdf_bytes(pages: list[dict], width_pt: float, height_pt: float,
         ("L_Handwriting", "Handwriting"),
     ]
     ocg_ids: dict[str, int] = {}
-    for res_name, label in layer_names:
-        ocg_ids[res_name] = add_obj(
-            b"<< /Type /OCG /Name " + _pdf_str(label) + b" >>"
-        )
+    if layers:
+        for res_name, label in layer_names:
+            ocg_ids[res_name] = add_obj(
+                b"<< /Type /OCG /Name " + _pdf_str(label) + b" >>"
+            )
 
     sx = width_pt / float(w)
     sy = height_pt / float(h)
+    root_ctm = (sx, 0.0, 0.0, -sy, 0.0, height_pt)
     page_ids: list[int] = []
 
     for page in pages:
-        sb = _StreamBuilder()
-        sb.cmds.append("q")
-        sb.cmds.append("%s 0 0 %s 0 %s cm" % (_fmt(sx), _fmt(-sy), _fmt(height_pt)))
+        sb = _StreamBuilder(root_ctm)
 
-        sb.cmds.append("/OC /L_Paper BDC")
+        if layers:
+            sb.cmds.append("/OC /L_Paper BDC")
         sb.emit_svg_fragment(paper_svg)
-        sb.cmds.append("EMC")
+        if layers:
+            sb.cmds.append("EMC")
 
         highlights = page.get("highlights") or []
         if highlights:
-            sb.cmds.append("/OC /L_Highlights BDC")
+            if layers:
+                sb.cmds.append("/OC /L_Highlights BDC")
             sb.emit_svg_fragment("".join(highlights))
-            sb.cmds.append("EMC")
+            if layers:
+                sb.cmds.append("EMC")
 
         strokes = page.get("strokes") or []
         if strokes:
-            sb.cmds.append("/OC /L_Diagrams BDC")
+            if layers:
+                sb.cmds.append("/OC /L_Diagrams BDC")
             sb.emit_svg_fragment("".join(strokes))
-            sb.cmds.append("EMC")
+            if layers:
+                sb.cmds.append("EMC")
 
         inked = page.get("inked") or []
         if inked:
-            sb.cmds.append("/OC /L_Handwriting BDC")
+            if layers:
+                sb.cmds.append("/OC /L_Handwriting BDC")
             sb.emit_svg_fragment("".join(svg for _, svg in inked))
-            sb.cmds.append("EMC")
-
-        sb.cmds.append("Q")
+            if layers:
+                sb.cmds.append("EMC")
 
         raw_stream = "\n".join(sb.cmds).encode("ascii")
         comp = zlib.compress(raw_stream, level=9)
@@ -614,8 +695,10 @@ def build_pdf_bytes(pages: list[dict], width_pt: float, height_pt: float,
             )
             gs_entries.append(b"/%s %d 0 R" % (name.encode("ascii"), gs_id))
 
-        props = b" ".join(b"/%s %d 0 R" % (k.encode("ascii"), oid) for k, oid in ocg_ids.items())
-        res_parts = [b"/Properties << " + props + b" >>"]
+        res_parts = []
+        if layers:
+            props = b" ".join(b"/%s %d 0 R" % (k.encode("ascii"), oid) for k, oid in ocg_ids.items())
+            res_parts.append(b"/Properties << " + props + b" >>")
         if gs_entries:
             res_parts.append(b"/ExtGState << " + b" ".join(gs_entries) + b" >>")
 
@@ -632,29 +715,33 @@ def build_pdf_bytes(pages: list[dict], width_pt: float, height_pt: float,
         )
         page_ids.append(page_id)
 
-    # Info dictionary (clean metadata)
-    info_parts = [
-        b"/Creator " + _pdf_str("penpad"),
-        b"/Producer " + _pdf_str("penpad %s" % __version__),
-        b"/CreationDate " + _pdf_date(),
-    ]
+    # Info dictionary (minimal, neutral metadata by default)
+    info_parts = [b"/CreationDate " + _pdf_date()]
     if title:
         info_parts.insert(0, b"/Title " + _pdf_str(title))
+    if creator:
+        info_parts.append(b"/Creator " + _pdf_str(creator))
+    if producer:
+        info_parts.append(b"/Producer " + _pdf_str(producer))
     info_id = add_obj(b"<< " + b" ".join(info_parts) + b" >>")
 
     # Fill in Pages (obj 2) and Catalog (obj 1)
     kids = b" ".join(b"%d 0 R" % pid for pid in page_ids)
     objects[1] = b"<< /Type /Pages /Count %d /Kids [ %s ] >>" % (len(page_ids), kids)
 
-    ocg_refs = b" ".join(b"%d 0 R" % ocg_ids[k] for k, _ in layer_names)
-    oc_props = (
-        b"<< /OCGs [ %s ] "
-        b"/D << /Name (Default) /BaseState /ON /Order [ %s ] >> >>" % (ocg_refs, ocg_refs)
-    )
-    objects[0] = b"<< /Type /Catalog /Pages 2 0 R /OCProperties %s >>" % oc_props
+    if layers:
+        ocg_refs = b" ".join(b"%d 0 R" % ocg_ids[k] for k, _ in layer_names)
+        oc_props = (
+            b"<< /OCGs [ %s ] "
+            b"/D << /Name (Default) /BaseState /ON /Order [ %s ] >> >>" % (ocg_refs, ocg_refs)
+        )
+        objects[0] = b"<< /Type /Catalog /Pages 2 0 R /OCProperties %s >>" % oc_props
+    else:
+        objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
 
     # Serialize PDF with xref table
-    out = bytearray(b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n")
+    version = b"%PDF-1.5\n" if layers else b"%PDF-1.4\n"
+    out = bytearray(version + b"%\xe2\xe3\xcf\xd3\n")
     offsets = [0]
     for idx, body in enumerate(objects, 1):
         offsets.append(len(out))
@@ -673,8 +760,13 @@ def build_pdf_bytes(pages: list[dict], width_pt: float, height_pt: float,
 
 
 def save_pdf(pages: list[dict], path: str, width_pt: float, height_pt: float,
-             w: int, h: int, paper_svg: str, title: str | None = None) -> str:
-    data = build_pdf_bytes(pages, width_pt, height_pt, w, h, paper_svg, title=title)
+             w: int, h: int, paper_svg: str, title: str | None = None,
+             *, layers: bool = False, creator: str | None = None,
+             producer: str | None = None) -> str:
+    data = build_pdf_bytes(
+        pages, width_pt, height_pt, w, h, paper_svg, title=title,
+        layers=layers, creator=creator, producer=producer,
+    )
     with open(path, "wb") as f:
         f.write(data)
     return path

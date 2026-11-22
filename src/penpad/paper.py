@@ -70,7 +70,7 @@ class Paper:
             out.append('<g fill="%s">%s</g>' % (self.color, "".join(dots)))
         if self.margin_line:
             x = self.margin * 0.8
-            out.append('<path d="M%.2f 0 V%d" stroke="%s" stroke-width="%.2f"/>' % (x, h, self.margin_line, lw * 1.2))
+            out.append('<path d="M%.2f 0 V%d" fill="none" stroke="%s" stroke-width="%.2f"/>' % (x, h, self.margin_line, lw * 1.2))
         return "".join(out)
 
 
