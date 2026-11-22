@@ -25,6 +25,11 @@ import zlib
 
 from fontTools.pens.svgPathPen import SVGPathPen
 
+try:
+    import pathops as _pathops
+except ImportError:  # pragma: no cover
+    _pathops = None
+
 from . import fonts
 
 DIGITS = frozenset("0123456789")
@@ -207,8 +212,32 @@ class Hand:
         return deformed, adv
 
     @staticmethod
-    def _render_ops(ops, mat) -> str:
-        """Bake affine transform into glyph ops and emit clean SVG path commands."""
+    def _render_ops(ops, mat, stroke_px: float = 0.0) -> str:
+        """Bake affine transform into glyph ops and convert fill+stroke pressure into one pure-fill path."""
+        if _pathops is not None and stroke_px > 1e-3:
+            try:
+                fill_p = _pathops.Path()
+                pen = fill_p.getPen()
+                for op, args in ops:
+                    getattr(pen, op)(*[None if a is None else _xform_pt(mat, a) for a in args])
+                stroke_p = _pathops.Path(fill_p)
+                stroke_p.stroke(
+                    stroke_px,
+                    _pathops.LineCap.ROUND_CAP,
+                    _pathops.LineJoin.ROUND_JOIN,
+                    4.0,
+                )
+                stroke_p.convertConicsToQuads()
+                merged = _pathops.Path()
+                _pathops.union([fill_p, stroke_p], merged.getPen())
+                merged.convertConicsToQuads()
+                svg_pen = SVGPathPen(None, ntos=lambda v: "%.1f" % v)
+                merged.draw(svg_pen)
+                d = svg_pen.getCommands()
+                if d:
+                    return d
+            except Exception:
+                pass
         pen = SVGPathPen(None, ntos=lambda v: "%.1f" % v)
         for op, args in ops:
             getattr(pen, op)(*[None if a is None else _xform_pt(mat, a) for a in args])
@@ -225,11 +254,11 @@ class Hand:
         glyphs = []
         for i, ch in enumerate(s):
             if ch in SPACES:
-                glyphs.append((ch, None, size * SPACES[ch], 1.0, None))
+                glyphs.append((ch, None, size * SPACES[ch], 1.0, None, None))
                 continue
             font = self._pick_font(s, i)
             if font is None:
-                glyphs.append((ch, None, size * 0.5, 1.0, None))
+                glyphs.append((ch, None, size * 0.5, 1.0, None, None))
                 continue
             vr = self._variant(font, ch)
             noise = e["glyph_noise"] * (e["digit_noise"] if ch in DIGITS else 1.0)
@@ -239,7 +268,7 @@ class Hand:
             if font != e["font"] and e.get("match_x_height", True) and ch.islower():
                 k = fonts.x_height(e["font"]) / fonts.x_height(font)
                 scale *= max(0.75, min(1.35, k))
-            glyphs.append((ch, ops, (adv or upem * 0.5) * scale, scale, vr))
+            glyphs.append((ch, ops, (adv or upem * 0.5) * scale, scale, vr, font))
 
         total = sum(g[2] for g in glyphs) + 0.45 * jit * u * len(glyphs)
         cx = x - total / 2 if anchor == "middle" else (x - total if anchor == "end" else x)
@@ -263,7 +292,7 @@ class Hand:
             word_color = None
             word_retraces = []
 
-        for i, (ch, ops, w, scale, vr) in enumerate(glyphs):
+        for i, (ch, ops, w, scale, vr, font) in enumerate(glyphs):
             if not ops:
                 flush_word()
                 cx += (w if ch in SPACES else max(w, size * 0.52)) + r.uniform(0.0, 1.6) * jit * u
@@ -283,8 +312,11 @@ class Hand:
             sx = scale * (1 + grow)
             sy = scale * (1 + grow + vr.uniform(-0.05, 0.05))
             c = _tone(color, r, e["tone_variation"] * loose) if e["tone_variation"] else color
+            # Keep pen weight consistent across the page (compensate thinner borrowed fonts like Bad Script)
+            thin_boost = 0.45 if font == "Bad Script" and e["font"] != "Bad Script" else 0.0
+            sw_px = (r.uniform(0.65, 1.05) + thin_boost) * e["pressure"] * max(0.75, u)
             mat = _mat_mul(tilt_mat, _letter_matrix(cx, y + dy, rot, skew, sx, -sy))
-            d = self._render_ops(ops, mat)
+            d = self._render_ops(ops, mat, sw_px)
 
             if word_color is not None and c != word_color:
                 flush_word()
