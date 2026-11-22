@@ -26,7 +26,7 @@ classifiers = [
   "Topic :: Multimedia :: Graphics",
   "Topic :: Text Processing :: Markup :: LaTeX",
 ]
-dependencies = ["resvg-py>=0.3", "pillow>=9", "fonttools[woff]>=4.40", "skia-pathops>=0.8"]
+dependencies = ["resvg-py>=0.3", "pillow>=9", "fonttools[woff]>=4.40"]
 
 [project.optional-dependencies]
 calibrate = ["pypdfium2>=4"]

@@ -33,13 +33,15 @@ CURSIVE = {
     "alternates": [],         # other fonts the hand borrows a letter from now and then
     "alternate_rate": 0.25,   # chance of borrowing, per letter
     "match_x_height": True,   # borrowed lowercase letters take the main font's x-height
-    # Letters that are genuinely ambiguous in Cedarville are borrowed from Bad Script
-    # (similar stroke weight) and automatically harmonized in slant and nib weight.
-    # All Greek comes from Mynerve (consistent weight, covers α..ω including ρ).
-    "pinned": dict({c: "Bad Script" for c in UPPER + "pwbl,;"}),
+    # Letters that are ambiguous in the main font are written with another one.
+    # In Cedarville p looks like ρ, w like ω, b like ℓ, l like e, and the capitals are
+    # too ornate (Z reads as 3, H as #).
+    # Its comma also reads as a subscript 7.
+    # Greek comes from Virgil (clear α ζ ω), except ρ, which reads as p there.
+    "pinned": dict({c: "Bad Script" for c in UPPER + "pwbl,;"}, ρ="Mynerve"),
     "isolated_font": "Bad Script",   # single letters in formulas (s, t, x) in print style
-    "isolated": {"b": "Bad Script", "C": "Bad Script"},
-    "greek_font": "Mynerve",
+    "isolated": {"b": "Handlee", "C": "Handlee"},   # lone b reads as 6, lone C as (
+    "greek_font": "Virgil",
     "crossed_seven": False,
     # -- variation model (see hand.py) --
     "allographs": 4,          # distinct shapes the hand keeps for each letter
@@ -51,12 +53,10 @@ CURSIVE = {
     "looseness": 0.6,         # baseline drift, word tilt
     "slant": 0.0,             # mean slant in degrees (positive leans right)
     "fatigue": 0.0,           # extra jitter towards the end of long documents
-    "pressure": 0.6,          # extra outline thickness with variable pen pressure
-    "join_rate": 0.88,        # probability of connecting adjacent lowercase letters into one stroke
-    "max_stroke_len": 5,      # max letters merged into a single continuous stroke
-    "margin_jitter": 4.2,     # organic left-margin drift across lines (px)
-    "baseline_jitter": 0.06,  # vertical baseline offset as fraction of ruling pitch
-    "correction_rate": 0.012, # occasional subtle false-start + quick strikethrough on prose words
+    "pressure": 0.6,          # pen weight parameter
+    "margin_jitter": 2.5,     # subtle organic left-margin drift across lines (px)
+    "baseline_jitter": 0.04,  # subtle vertical baseline offset as fraction of ruling pitch
+    "correction_rate": 0.0,   # opt-in occasional false-start + strikethrough on prose words
     "tone_variation": 0.0,    # Goodnotes ink is flat
     "retrace": 0.0,           # chance of going over a letter twice
     # -- ink --
@@ -70,20 +70,21 @@ PRINT = dict(
     CURSIVE,
     roughness=1.9, bow=1.1, stroke_width=2.6, pen_width=0.085,
     font="Handlee", alternates=[],
-    # Keep borrowed letters to close-weight fonts (weight & slant are also harmonized)
-    pinned={"b": "Bad Script", "w": "Bad Script", "p": "Mynerve", "u": "Bad Script"},
+    # Caveat b looks like 6, cursive w like ω, Handlee p like ρ and u like υ
+    pinned={"b": "Virgil", "w": "Bad Script", "W": "Walter Turncoat", "p": "Gochi Hand", "u": "Gochi Hand",
+            "ρ": "Mynerve"},
     isolated_font=None, isolated={},
     glyph_noise=0.020, digit_noise=1.0, jitter=0.9, looseness=0.7,
-    pressure=0.45, join_rate=0.28, max_stroke_len=2, tone_variation=0.18, retrace=0.13, ink_softness=0.6, ink_gain=1.7,
+    pressure=0.45, tone_variation=0.18, retrace=0.13, ink_softness=0.6, ink_gain=1.7,
 )
 
 CASUAL = dict(
     PRINT,
     roughness=1.2, stroke_width=2.0, pen_width=0.075,
     font="Caveat", alternates=[],
-    pinned={"b": "Bad Script", "w": "Bad Script"},
+    pinned={"b": "Virgil", "w": "Bad Script", "ρ": "Mynerve"},
     glyph_noise=0.016, jitter=0.8, looseness=0.6, slant=3.0,
-    pressure=0.35, join_rate=0.62, max_stroke_len=4, tone_variation=0.0, retrace=0.0, ink_softness=0.35, ink_gain=1.4,
+    pressure=0.35, tone_variation=0.0, retrace=0.0, ink_softness=0.35, ink_gain=1.4,
 )
 
 STYLES = {"cursive": CURSIVE, "print": PRINT, "casual": CASUAL}

@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from fontTools.pens.areaPen import AreaPen
 from fontTools.pens.boundsPen import BoundsPen
 from fontTools.pens.recordingPen import DecomposingRecordingPen
 from fontTools.ttLib import TTFont
@@ -80,58 +79,6 @@ def x_height(name: str) -> float:
     if not pen.bounds:
         return 0.5
     return max(0.2, (pen.bounds[3] - max(pen.bounds[1], 0)) / upem)
-
-
-@lru_cache(maxsize=None)
-def stroke_weight(name: str) -> float:
-    """Estimated stroke thickness as a fraction of the em (for harmonizing borrowed glyphs)."""
-    gset, cmap, upem, _ = _load(name)
-    vals = []
-    for ch in ("o", "a", "e", "n"):
-        g = cmap.get(ord(ch))
-        if g is None:
-            continue
-        ap = AreaPen(gset)
-        bp = BoundsPen(gset)
-        gset[g].draw(ap)
-        gset[g].draw(bp)
-        if bp.bounds:
-            w = bp.bounds[2] - bp.bounds[0]
-            h = bp.bounds[3] - bp.bounds[1]
-            if w + h > 0:
-                vals.append(abs(ap.value) / (2.2 * (w + h)) / upem)
-    return sum(vals) / len(vals) if vals else 0.036
-
-
-@lru_cache(maxsize=None)
-def natural_slant(name: str) -> float:
-    """Estimated built-in slant angle in degrees (positive leans right)."""
-    gset, cmap, _, _ = _load(name)
-    angles = []
-    for ch in ("l", "I", "h", "t"):
-        g = cmap.get(ord(ch))
-        if g is None:
-            continue
-        pen = DecomposingRecordingPen(gset)
-        gset[g].draw(pen)
-        pts = [pt for _, args in pen.value for pt in args if pt is not None]
-        if len(pts) < 4:
-            continue
-        ys = [p[1] for p in pts]
-        ymin, ymax = min(ys), max(ys)
-        span = ymax - ymin
-        if span < 50:
-            continue
-        top = [p[0] for p in pts if p[1] >= ymin + 0.72 * span]
-        bot = [p[0] for p in pts if p[1] <= ymin + 0.28 * span]
-        if top and bot:
-            dx = (sum(top) / len(top)) - (sum(bot) / len(bot))
-            dy = 0.72 * span
-            import math
-            ang = math.degrees(math.atan2(dx, dy))
-            if abs(ang) < 28.0:
-                angles.append(ang)
-    return sum(angles) / len(angles) if angles else 0.0
 
 
 def resolve(name: str, ch: str) -> str | None:
