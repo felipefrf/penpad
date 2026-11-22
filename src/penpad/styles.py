@@ -9,12 +9,16 @@ from __future__ import annotations
 # Goodnotes pen colors measured on exported pages.
 INKS = {
     "black": "#1e1b1b",
+    "navy": "#1a2b4c",
     "blue": "#53aaff",
     "red": "#f33f3f",
     "purple": "#6f44a3",
     "green": "#2f9e44",
+    "graphite": "#4a5568",
     "gray": "#adb5bd",
 }
+
+HIGHLIGHT_COLOR = "#ffeb64"
 
 UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 

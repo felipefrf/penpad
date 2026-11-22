@@ -7,6 +7,7 @@
 - Output: multi-page PDF at the real paper size, or PNG pages. Paper presets: Goodnotes default page (16 pt grid), A4 grid/lined/dotted/plain, US Letter lined/grid, reMarkable.
 - Handwriting: three styles (cursive, print, casual) built from bundled open fonts. Variation comes from a writer model: slant, size and baseline drift (Ornstein-Uhlenbeck processes), each letter has a small set of shapes that never repeats back to back, and there is per-instance outline noise. Legibility clamps apply. Output is deterministic per seed.
 - Python API: `from penpad import Notebook`, then `nb.title()`, `nb.text()`, `nb.math(latex)`, `nb.figure(height, draw)` for hand-drawn sketches (lines, arrows, curves), and `nb.save("out.pdf")`.
+- MCP server: `penpad mcp` (stdio) or `penpad mcp --http` exposes a `render_notes` tool (Markdown + LaTeX in, PDF out, with a first-page preview and warnings) to Claude, ChatGPT and other MCP clients. Install with `uvx --from "penpad[mcp] @ git+https://github.com/felipefrf/penpad" penpad mcp`; needs Python 3.10+.
 - Calibration: `penpad calibrate page.pdf` measures a page written by hand and compares it with the bundled fonts. Custom handwriting fonts load with `register_font`.
 - Good fit for: converting typed or LaTeX study notes into handwritten-style pages for a tablet notebook, generating handwritten-looking worked solutions for one's own study, flashcards, mockups and illustrations.
 - Not intended for: passing generated text off as handwriting where handwriting is required (exams, signatures, handwritten assignments).

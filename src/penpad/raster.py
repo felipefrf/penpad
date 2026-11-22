@@ -21,8 +21,8 @@ def rasterize(w, h, body, width_px, background=None) -> Image.Image:
     return Image.open(io.BytesIO(bytes(data))).convert("RGBA")
 
 
-def compose(w, h, paper_svg, strokes, inked, style, width_pt, dpi=DEFAULT_DPI) -> Image.Image:
-    """Paper, then crisp strokes, then one soft-edged ink layer per color.
+def compose(w, h, paper_svg, strokes, inked, style, width_pt, dpi=DEFAULT_DPI, highlights=None) -> Image.Image:
+    """Paper, then translucent highlights, then crisp strokes, then one soft-edged ink layer per color.
 
     ``inked`` is a list of (color, svg) pairs; handwriting goes there.
     """
@@ -30,6 +30,8 @@ def compose(w, h, paper_svg, strokes, inked, style, width_pt, dpi=DEFAULT_DPI) -
     ss = style.get("supersample", 2.0)
     big = out_w * ss
     img = rasterize(w, h, paper_svg, big, "white")
+    if highlights:
+        img = Image.alpha_composite(img, rasterize(w, h, "".join(highlights), big))
     if strokes:
         img = Image.alpha_composite(img, rasterize(w, h, "".join(strokes), big))
     by_color = {}

@@ -13,7 +13,7 @@ requires-python = ">=3.9"
 authors = [{ name = "Felipe Ribeiro" }]
 keywords = [
   "handwriting", "text-to-handwriting", "handwritten-notes", "handwriting-generator",
-  "goodnotes", "notability", "ipad", "remarkable", "tablet", "latex", "math", "study-notes", "pdf",
+  "goodnotes", "notability", "ipad", "remarkable", "tablet", "latex", "math", "study-notes", "pdf", "mcp",
 ]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -30,6 +30,7 @@ dependencies = ["resvg-py>=0.3", "pillow>=9", "fonttools[woff]>=4.40"]
 
 [project.optional-dependencies]
 calibrate = ["pypdfium2>=4"]
+mcp = ["mcp>=2,<3; python_version >= '3.10'"]
 test = ["pytest>=7", "pypdfium2>=4"]
 
 [project.scripts]

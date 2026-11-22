@@ -40,6 +40,21 @@ pip, e as fontes livres já vêm no pacote. Funciona em Linux, macOS e Windows. 
 Papéis disponíveis: página padrão do Goodnotes, A4 quadriculado, pautado, pontilhado ou liso,
 Carta pautado ou quadriculado e reMarkable. Estilos de letra: `cursive`, `print` e `casual`.
 
+## No Claude, ChatGPT ou outro cliente MCP
+
+O penpad também roda como servidor [MCP](https://modelcontextprotocol.io). O assistente lê o
+material (slides, artigo, transcrição da aula, Google Classroom pelo conector dele) e escreve o
+resumo. O penpad transforma esse resumo em páginas manuscritas para importar no app de notas.
+Precisa de Python 3.10+ e do [uv](https://docs.astral.sh/uv/).
+
+```bash
+claude mcp add penpad -- uvx --from "penpad[mcp] @ git+https://github.com/felipefrf/penpad" penpad mcp
+```
+
+Depois é só pedir algo como *"resume o capítulo 3 desses slides em anotações à mão para o
+Goodnotes"*. Os PDFs vão para `~/Documents/penpad`. A configuração do Claude Desktop e os detalhes
+estão no [README em inglês](README.md#from-claude-chatgpt-or-any-mcp-client).
+
 ## Por que a letra parece de verdade
 
 A inclinação, o tamanho e a linha de base mudam devagar, como numa mão de verdade (processos de

@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
+import xml.etree.ElementTree as ET
 from concurrent.futures import ProcessPoolExecutor
 
-from . import raster
+from . import raster, vector
 from .hand import Hand, hand_line
 from .latex import escape_text, latex_to_markup
 from .layout import Box, Row, parse, stroke, words
@@ -20,8 +22,8 @@ MIN_FIT = 0.62   # an equation may shrink to this fraction of the letter size to
 
 
 def _render_page(args):
-    w, h, paper_svg, strokes, inked, style, width_pt, dpi = args
-    return raster.compose(w, h, paper_svg, strokes, inked, style, width_pt, dpi)
+    w, h, paper_svg, highlights, strokes, inked, style, width_pt, dpi = args
+    return raster.compose(w, h, paper_svg, strokes, inked, style, width_pt, dpi, highlights=highlights)
 
 
 class Notebook:
@@ -37,7 +39,8 @@ class Notebook:
     Colors are ink names (black, blue, red, purple, green, gray) or #hex.
     """
 
-    def __init__(self, paper="goodnotes", style="cursive", seed=1, footer=None, accent="blue", **overrides):
+    def __init__(self, paper="goodnotes", style="cursive", seed=1, footer=None, accent="blue",
+                 title=None, **overrides):
         self.paper = get_paper(paper)
         self.style = get_style(style, **overrides)
         self.W, self.H = self.paper.size_px
@@ -47,6 +50,7 @@ class Notebook:
         self.pen = self.paper.pen_scale
         self.seed = seed
         self.footer = footer
+        self.doc_title = title
         self.accent = ink(accent)
         self.pages = []
         self.new_page()
@@ -54,7 +58,7 @@ class Notebook:
     # ------------------------------------------------------------------ pages
     def new_page(self):
         self.hand = Hand(self.style, self.seed * 1000 + len(self.pages))
-        self.page = {"strokes": [], "inked": []}
+        self.page = {"highlights": [], "strokes": [], "inked": []}
         self.pages.append(self.page)
         self.cursor = self.G * 2.2
         self._last_desc = 0.0
@@ -65,7 +69,7 @@ class Notebook:
         return self.H - self.G * 2.5
 
     def _empty(self):
-        return not (self.page["inked"] or self.page["strokes"])
+        return not (self.page["inked"] or self.page["strokes"] or self.page["highlights"])
 
     def _ensure(self, height):
         if self.cursor + height > self._bottom() and not self._empty():
@@ -80,7 +84,11 @@ class Notebook:
         return math.ceil((self.cursor + asc + 3 - tol) / self.G) * self.G
 
     def place(self, item, x, y):
-        self.page["inked"] += item.at(x, y)
+        for c, svg in item.at(x, y):
+            if c == "__highlight__":
+                self.page["highlights"].append(svg)
+            else:
+                self.page["inked"].append((c, svg))
 
     def _line(self, item, x, before=0):
         self.cursor += before
@@ -109,6 +117,8 @@ class Notebook:
         self.cursor += lines * self.G
 
     def title(self, s, color=None, underline=False):
+        if self.doc_title is None:
+            self.doc_title = s
         color = ink(color) if color else self.accent
         self._ensure(self.G * 4)
         size = self.size * 1.2
@@ -172,6 +182,90 @@ class Notebook:
         draw(self, self.M, y0)
         self.cursor = y0 + height
 
+    def step(self, s, indent=18, color="graphite", bar_color="#718096", size=None, markup=True):
+        """Intermediate algebraic step / scratchpad note in graphite with a vertical left bar."""
+        self.steps([s], indent=indent, color=color, bar_color=bar_color, size=size, markup=markup)
+
+    aside = step
+
+    def steps(self, lines, indent=18, color="graphite", bar_color="#718096", size=None, markup=True):
+        """Multi-line algebraic derivation block sharing one continuous graphite left bar."""
+        if not lines:
+            return
+        sz = size or self.size * 0.86
+        ind = indent * self.size / 24.0
+        bar_x = self.M + ind * 0.45
+        bar_w = max(1.4, self.style["stroke_width"] * self.pen * 0.9)
+        bar_col = ink(bar_color)
+
+        def draw_bar(page_obj, y_top, y_bot):
+            if y_bot <= y_top:
+                return
+            d = hand_line(bar_x, y_top, bar_x, y_bot, self.hand.rng,
+                          min(self.style["roughness"] * 0.4, 0.7), 0.2)
+            page_obj["strokes"].append(
+                '<path d="%s" fill="none" stroke="%s" stroke-width="%.2f" '
+                'stroke-linecap="round" opacity="0.55"/>' % (d, bar_col, bar_w)
+            )
+
+        seg_page = self.page
+        seg_top = None
+        seg_bot = None
+        for ln in lines:
+            before_page = self.page
+            before_cursor = self.cursor
+            self.text(ln, indent=ind, color=color, size=sz, markup=markup)
+            if self.page is not before_page:
+                if seg_top is not None:
+                    draw_bar(seg_page, seg_top, seg_bot)
+                seg_page = self.page
+                seg_top = self.G * 2.2
+                seg_bot = self.cursor
+            else:
+                if seg_top is None:
+                    seg_top = max(self.G * 2.2, before_cursor + 2)
+                seg_bot = self.cursor
+        if seg_top is not None:
+            draw_bar(seg_page, seg_top, seg_bot)
+
+    def svg_figure(self, svg_text, height=None):
+        """Embed a pure vector <svg> diagram into the Diagrams layer, scaled to fit the page."""
+        try:
+            root = ET.fromstring(svg_text.strip())
+        except ET.ParseError as e:
+            log.warning("invalid inline SVG diagram: %s", e)
+            return
+        vb = root.attrib.get("viewBox") or root.attrib.get("viewbox")
+        vx = vy = 0.0
+        if vb:
+            nums = [float(x) for x in re.findall(r"[+-]?(?:\d+\.?\d*|\.\d+)", vb)]
+            if len(nums) == 4:
+                vx, vy, vw, vh = nums
+            else:
+                vw, vh = 400.0, 200.0
+        else:
+            def _dim(val, fallback):
+                m = re.search(r"[+-]?(?:\d+\.?\d*|\.\d+)", val or "")
+                return float(m.group(0)) if m else fallback
+            vw = _dim(root.attrib.get("width"), 400.0)
+            vh = _dim(root.attrib.get("height"), 200.0)
+        if vw <= 0 or vh <= 0:
+            return
+        max_w = self.W - 2 * self.M
+        scale = min(max_w / vw, (height / vh) if height else (max_w / vw))
+        draw_w = vw * scale
+        draw_h = vh * scale
+        self._ensure(draw_h + self.G)
+        y0 = math.ceil((self.cursor + self.G * 0.5) / self.G) * self.G
+        x0 = self.M + (max_w - draw_w) / 2.0
+        inner = "".join(ET.tostring(child, encoding="unicode") for child in root)
+        tx = x0 - vx * scale
+        ty = y0 - vy * scale
+        self.page["strokes"].append(
+            '<g transform="translate(%.2f %.2f) scale(%.5f)">%s</g>' % (tx, ty, scale, inner)
+        )
+        self.cursor = y0 + draw_h
+
     # ------------------------------------------------------- sketch primitives
     def write(self, x, y, s, size=None, color="black", anchor="start"):
         color, size = ink(color), size or self.size * 0.85
@@ -219,8 +313,7 @@ class Notebook:
         self.curve(pts, color, width, closed=True)
 
     # ------------------------------------------------------------------ output
-    def _jobs(self, dpi):
-        paper_svg = self.paper.svg()
+    def _pages_with_footers(self):
         out = []
         for n, page in enumerate(self.pages, 1):
             inked = list(page["inked"])
@@ -229,8 +322,24 @@ class Notebook:
                 svg, _ = hand.write(self.W - self.M, self.H - self.G * 1.2, "%s  %d" % (self.footer, n),
                                     ink("gray"), self.size * 0.7, "end")
                 inked.append((ink("gray"), svg))
-            out.append((self.W, self.H, paper_svg, page["strokes"], inked, self.style, self.paper.width_pt, dpi))
+            out.append({
+                "highlights": list(page["highlights"]),
+                "strokes": list(page["strokes"]),
+                "inked": inked,
+            })
         return out
+
+    def _jobs(self, dpi):
+        paper_svg = self.paper.svg()
+        return [
+            (self.W, self.H, paper_svg, p["highlights"], p["strokes"], p["inked"],
+             self.style, self.paper.width_pt, dpi)
+            for p in self._pages_with_footers()
+        ]
+
+    def render_page(self, index=0, dpi=raster.DEFAULT_DPI):
+        """Rasterize a single page (0-based) to a PIL image."""
+        return _render_page(self._jobs(dpi)[index])
 
     def render(self, dpi=raster.DEFAULT_DPI, jobs=1):
         """Render every page to a PIL image. jobs > 1 renders pages in parallel processes."""
@@ -241,13 +350,37 @@ class Notebook:
         with ProcessPoolExecutor(jobs) as pool:
             return list(pool.map(_render_page, work))
 
-    def save(self, path, dpi=raster.DEFAULT_DPI, jobs=1):
-        """Save as .pdf (all pages, real paper size) or .png (one file per page: name-01.png...)."""
+    def render_pdf_bytes(self, vector_pdf=True, dpi=raster.DEFAULT_DPI, jobs=1) -> bytes:
+        """Return the document as PDF bytes (pure vector by default, or rasterized if vector_pdf=False)."""
+        if vector_pdf:
+            return vector.build_pdf_bytes(
+                self._pages_with_footers(), self.paper.width_pt, self.paper.height_pt,
+                self.W, self.H, self.paper.svg(), title=self.doc_title,
+            )
+        import io
         images = self.render(dpi, jobs)
+        buf = io.BytesIO()
+        images[0].save(buf, format="PDF", save_all=True, append_images=images[1:],
+                       resolution=images[0].width / (self.paper.width_pt / 72))
+        return buf.getvalue()
+
+    def save(self, path, dpi=raster.DEFAULT_DPI, jobs=1, vector_pdf=True):
+        """Save as .pdf (pure vector by default), .svg (layered vector) or .png (one file per page)."""
         root, ext = os.path.splitext(path)
-        if ext.lower() == ".pdf":
+        ext_l = ext.lower()
+        if ext_l == ".pdf":
+            if vector_pdf:
+                vector.save_pdf(
+                    self._pages_with_footers(), path, self.paper.width_pt, self.paper.height_pt,
+                    self.W, self.H, self.paper.svg(), title=self.doc_title,
+                )
+                return [path]
+            images = self.render(dpi, jobs)
             raster.save_pdf(images, path, self.paper.width_pt)
             return [path]
+        if ext_l == ".svg":
+            return vector.save_svg(self._pages_with_footers(), path, self.W, self.H, self.paper.svg())
+        images = self.render(dpi, jobs)
         if len(images) == 1:
             images[0].save(path)
             return [path]

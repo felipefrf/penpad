@@ -46,7 +46,7 @@ def _write(src, out, a):
     if a.slant is not None:
         overrides["slant"] = a.slant
     nb = render_markdown(src, paper=a.paper, style=a.style, seed=a.seed, footer=a.footer, **overrides)
-    paths = nb.save(out, dpi=a.dpi, jobs=a.jobs)
+    paths = nb.save(out, dpi=a.dpi, jobs=a.jobs, vector_pdf=not a.raster)
     n = len(nb.pages)
     if not a.quiet:
         print("%s  %d page%s  %.1fs" % (", ".join(paths), n, "" if n == 1 else "s", time.time() - t0))
@@ -72,6 +72,17 @@ def _calibrate(a):
     return 0
 
 
+def _mcp(a):
+    try:
+        from .mcp_server import main as serve
+    except ImportError:
+        print("penpad: the MCP server needs Python 3.10+ and the mcp extra: "
+              "pip install \"penpad[mcp] @ git+https://github.com/felipefrf/penpad\"", file=sys.stderr)
+        return 1
+    serve(http=a.http, host=a.host, port=a.port)
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="penpad",
@@ -81,7 +92,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd")
 
     def common(p):
-        p.add_argument("-o", "--output", help="output .pdf or .png (default: input name .pdf)")
+        p.add_argument("-o", "--output", help="output .pdf, .svg or .png (default: input name .pdf)")
         p.add_argument("--paper", default="goodnotes", choices=sorted(PAPERS))
         p.add_argument("--style", default="cursive", choices=sorted(STYLES))
         p.add_argument("--seed", type=int, default=1, help="same seed, same handwriting")
@@ -89,6 +100,8 @@ def main(argv=None):
         p.add_argument("--slant", type=float, help="mean slant in degrees, positive leans right")
         p.add_argument("--footer", help="text written at the bottom of every page, before the page number")
         p.add_argument("--dpi", type=int, default=225)
+        p.add_argument("--raster", action="store_true",
+                       help="rasterize PDF pages as images instead of pure vector paths")
         p.add_argument("-j", "--jobs", type=int, default=0, help="pages rendered in parallel (0 = all cores)")
         p.add_argument("-q", "--quiet", action="store_true")
         p.add_argument("-v", "--verbose", action="store_true")
@@ -112,6 +125,12 @@ def main(argv=None):
     p.add_argument("--phrase", default="The quick brown fox jumps over the lazy dog, p = p(ρ), Re = 200 000")
     p.add_argument("--out", default="calibration")
     p.set_defaults(func=_calibrate, verbose=False)
+
+    p = sub.add_parser("mcp", help="run penpad as an MCP server (Claude, ChatGPT, editors)")
+    p.add_argument("--http", action="store_true", help="streamable HTTP instead of stdio")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
+    p.set_defaults(func=_mcp, verbose=False)
 
     a = ap.parse_args(argv)
     if not a.cmd:

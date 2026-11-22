@@ -10,7 +10,10 @@ Supported, one construct per line:
     - bullet / * bullet          hanging indent
     1. item / (a) item / a) item hanging indent, label kept
     > note                       written in purple
-    {red} any line               ink for that line (black, blue, red, purple, green, gray)
+    | algebraic step             intermediate derivation in graphite with a left bar
+    ==highlighted text==         translucent vector highlighter behind the ink
+    ```svg ... ```               pure vector SVG diagram embedded in the Diagrams layer
+    {red} any line               ink for that line (black, navy, blue, red, purple, green, graphite, gray)
     ---                          new page
     blank line                   one empty ruling line
 """
@@ -26,9 +29,10 @@ from .styles import INKS
 _COLOR = re.compile(r"^\{(%s|#[0-9a-fA-F]{3,6})\}\s*" % "|".join(INKS))
 _ITEM = re.compile(r"^(\d+[.)]|\([a-z0-9]+\)|[a-z][.)])\s+(.*)$")
 _DISPLAY = re.compile(r"^\$\$(!?)\s*(.*?)\s*\$\$$")
+_HIGHLIGHT = re.compile(r"==(.+?)==")
 
 
-def inline(s: str) -> str:
+def _inline_plain(s: str) -> str:
     """Escape literal text, translate $...$ spans from LaTeX."""
     out, pos = [], 0
     for m in re.finditer(r"(?<!\\)\$(.+?)(?<!\\)\$", s):
@@ -36,6 +40,47 @@ def inline(s: str) -> str:
         out.append(latex_to_markup(m.group(1)))
         pos = m.end()
     out.append(escape_text(s[pos:].replace("\\$", "$")))
+    return "".join(out)
+
+
+def _split_tokens_preserving_math(s: str) -> list[str]:
+    """Split on spaces outside $...$ so highlighted phrases still word-wrap cleanly."""
+    tokens, cur, in_math, i = [], [], False, 0
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s):
+            cur.append(s[i:i + 2])
+            i += 2
+            continue
+        if ch == "$":
+            in_math = not in_math
+            cur.append(ch)
+            i += 1
+            continue
+        if ch == " " and not in_math:
+            if cur:
+                tokens.append("".join(cur))
+                cur = []
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    if cur:
+        tokens.append("".join(cur))
+    return tokens
+
+
+def inline(s: str) -> str:
+    """Escape literal text, translate $...$ LaTeX spans and ==...== vector highlights."""
+    if "==" not in s:
+        return _inline_plain(s)
+    out, pos = [], 0
+    for m in _HIGHLIGHT.finditer(s):
+        out.append(_inline_plain(s[pos:m.start()]))
+        words_hl = _split_tokens_preserving_math(m.group(1))
+        out.append(" ".join("\\h{%s}" % _inline_plain(tok) for tok in words_hl))
+        pos = m.end()
+    out.append(_inline_plain(s[pos:]))
     return "".join(out)
 
 
@@ -48,6 +93,17 @@ def render_markdown(source: str, notebook: Notebook | None = None, **kw) -> Note
     while i < len(lines):
         raw = lines[i].rstrip()
         i += 1
+        # fenced pure-vector SVG diagram block
+        if raw.strip().lower().startswith("```svg"):
+            svg_lines = []
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                svg_lines.append(lines[i])
+                i += 1
+            if i < len(lines):
+                i += 1
+            nb.svg_figure("\n".join(svg_lines))
+            blank = 0
+            continue
         # multi-line display math: $$ on its own line
         if raw.strip() in ("$$", "$$!"):
             boxed = raw.strip() == "$$!"
@@ -78,6 +134,14 @@ def render_markdown(source: str, notebook: Notebook | None = None, **kw) -> Note
             continue
         if line.startswith("# "):
             nb.title(inline(line[2:]), color=None if color == "black" else color)
+            continue
+        # contiguous algebraic step / scratchpad block: | ...
+        if line.startswith("| "):
+            step_lines = [inline(line[2:].strip())]
+            while i < len(lines) and lines[i].strip().startswith("| "):
+                step_lines.append(inline(lines[i].strip()[2:].strip()))
+                i += 1
+            nb.steps(step_lines, color="graphite" if color == "black" else color)
             continue
         m = _DISPLAY.match(line)
         if m:

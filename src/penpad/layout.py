@@ -259,6 +259,27 @@ class Box(Item):
         self.w, self.asc, self.desc = x1, -y0, y1
 
 
+class Highlight(Item):
+    """Translucent vector highlighter stroke drawn behind the ink."""
+
+    def __init__(self, hand, inside, size, color="#ffeb64", opacity=0.52):
+        super().__init__()
+        r = hand.rng
+        pad = 0.14 * size
+        y_mid = (-inside.asc + inside.desc) * 0.42
+        h = max(0.82 * size, (inside.asc + inside.desc) * 0.78)
+        dy1 = r.uniform(-0.04, 0.04) * size
+        dy2 = r.uniform(-0.04, 0.04) * size
+        d = "M%.2f %.2f L%.2f %.2f" % (-pad, y_mid + dy1, inside.w + pad, y_mid + dy2)
+        hl_svg = (
+            '<path d="%s" fill="none" stroke="%s" stroke-width="%.2f" '
+            'stroke-linecap="round" opacity="%.2f"/>' % (d, color, h, opacity)
+        )
+        self.parts.append(("__highlight__", hl_svg))
+        self.parts += inside.at(0, 0)
+        self.w, self.asc, self.desc = inside.w, inside.asc, inside.desc
+
+
 # ---------------------------------------------------------------------------- parser
 def _group(s, i):
     """Read {...} or one character (with its combining accents) starting at i."""
@@ -321,7 +342,7 @@ def parse(hand, s, size, color):
             buf += s[i + 1]
             i += 2
             continue
-        if ch == "\\" and i + 1 < len(s) and s[i + 1] in "fipqr":
+        if ch == "\\" and i + 1 < len(s) and s[i + 1] in "fipqrh":
             flush()
             cmd = s[i + 1]
             i += 2
@@ -338,6 +359,9 @@ def parse(hand, s, size, color):
             elif cmd == "r":
                 a, i = _group(s, i)
                 items.append(Root(hand, row(a, size), size, color))
+            elif cmd == "h":
+                a, i = _group(s, i)
+                items.append(Highlight(hand, row(a, size), size))
             else:
                 a, i = _group(s, i)
                 items.append(Delim(hand, row(a, size), size, color, "(" if cmd == "p" else "["))

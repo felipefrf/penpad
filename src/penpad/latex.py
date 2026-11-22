@@ -6,6 +6,10 @@ plus combining accents (u⃗ x̂ ẋ ẍ x̄). Anything penpad cannot draw is pa
 
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("penpad")
+
 SYMBOLS = {
     # greek
     "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε", "varepsilon": "ε",
@@ -176,6 +180,7 @@ class _Parser:
             return "\u2009" + name + "\u2009"
         if name in SYMBOLS:
             return SYMBOLS[name]
+        log.warning("unsupported LaTeX command \\%s, written as plain text", name)
         return name   # unknown command: keep its name readable
 
 

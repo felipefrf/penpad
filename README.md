@@ -87,11 +87,50 @@ penpad render notes.md [-o out.pdf|out.png] [--style cursive|print|casual]
               [--seed N] [--jitter 0.7] [--slant 4] [--footer "Physics I"] [--dpi 225] [-j JOBS]
 penpad list                      # styles, inks and papers
 penpad calibrate my_page.pdf     # compare a page you wrote with the bundled fonts
+penpad mcp                       # MCP server for Claude, ChatGPT and other assistants
 cat notes.md | penpad render - -o notes.pdf
 ```
 
 Pages render in parallel (`-j`, all cores by default), so long documents scale with the machine.
 Output is one line per file, and errors are a single line too (`-v` shows the details).
+
+## From Claude, ChatGPT or any MCP client
+
+penpad also runs as an [MCP](https://modelcontextprotocol.io) server. Your assistant reads the
+material (slides, a paper, a lecture transcript, Google Classroom through its own connector) and
+writes the summary; penpad turns it into handwritten pages you import into your notebook app.
+Needs Python 3.10+ and [uv](https://docs.astral.sh/uv/).
+
+Claude Code:
+
+```bash
+claude mcp add penpad -- uvx --from "penpad[mcp] @ git+https://github.com/felipefrf/penpad" penpad mcp
+```
+
+Claude Desktop, Cursor and other clients (`claude_desktop_config.json` or the client's MCP settings):
+
+```json
+{
+  "mcpServers": {
+    "penpad": {
+      "command": "uvx",
+      "args": ["--from", "penpad[mcp] @ git+https://github.com/felipefrf/penpad", "penpad", "mcp"]
+    }
+  }
+}
+```
+
+Then ask something like *"summarize chapter 3 of these slides as handwritten notes for Goodnotes"*.
+The server offers:
+
+- `render_notes`: Markdown + LaTeX in, PDF saved to `~/Documents/penpad` (or `$PENPAD_OUTPUT_DIR`).
+  It returns a small preview of the first page and warnings (unsupported LaTeX, lines too wide),
+  so the assistant can check its own work and fix it.
+- `list_options`: styles, inks and papers.
+- a `study_notes` prompt that turns pasted material into notes, and a `penpad://syntax` resource.
+
+`penpad mcp --http --port 8000` serves the same tools over streamable HTTP; there the PDF comes
+back inside the tool result instead of being written to disk.
 
 ## Styles and papers
 

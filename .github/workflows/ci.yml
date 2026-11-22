@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: pip install ".[test]"
+      - run: pip install ".[test,mcp]"
       - run: pytest -q
       - run: penpad demo -o demo.pdf
       - run: penpad render examples/physics-notes.md -o physics.png --paper a4-lines --style print
